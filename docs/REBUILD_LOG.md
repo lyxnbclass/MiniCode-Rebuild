@@ -11,9 +11,9 @@
 | 当前阶段 | 阶段 0：仓库初始化与工程基线 |
 | 最近完成 | 工程基线实现及本地验收 |
 | 当前分支 | `rebuild/minicode-learning` |
-| 最新提交 | `f314fb3 chore: initialize repository` |
+| 阶段实现提交 | `62ca406 chore(phase-00): bootstrap project and learning log` |
 | 测试状态 | 阶段测试与全量测试均为 `4 passed` |
-| 下一步 | 提交并推送阶段 0，然后规划阶段 1 |
+| 下一步 | 推送阶段 0，然后规划阶段 1 |
 
 ## 总体架构
 
@@ -30,7 +30,7 @@ flowchart LR
 
 | 阶段 | 名称 | 状态 | 核心产物 | 提交 |
 |---|---|---|---|---|
-| 0 | 仓库初始化与工程基线 | 已完成 | Python 包、CLI、pytest、README、学习日志 | 待提交 |
+| 0 | 仓库初始化与工程基线 | 已完成 | Python 包、CLI、pytest、README、学习日志 | `62ca406` |
 | 1 | 核心类型与模型适配层 | 待开始 | 核心类型、`ModelAdapter`、`MockModel`、真实适配器 | - |
 | 2 | 工具基础设施 | 待开始 | 工具定义、上下文、结果和注册表 | - |
 | 3 | 只读工作区工具 | 待开始 | 读取、列举、搜索和路径保护 | - |
@@ -197,9 +197,9 @@ python -m venv .venv
 ### 13. Git 记录
 
 - 分支：`rebuild/minicode-learning`
-- 提交：将在创建阶段提交后回填真实哈希
+- 提交：`62ca406`
 - 提交信息：`chore(phase-00): bootstrap project and learning log`
-- 远程状态：待提交后推送
+- 远程状态：待推送
 
 ### 14. 下一阶段
 
