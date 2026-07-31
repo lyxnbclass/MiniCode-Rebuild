@@ -352,6 +352,7 @@ ModelSettings.from_env
 |---|---|---|---|
 | OpenAI Developer Docs MCP 无法安装 | 当前环境拒绝执行 `codex.exe`，返回 `Access is denied` | 按文档技能的官方域名回退规则，读取 OpenAI 官方 API Reference | 只以官方 API 参考为协议依据，不用搜索摘要猜测字段 |
 | 测试先行时 4 个模块导入失败 | 测试引用的阶段 1 模块尚未实现 | 保留失败输出作为红灯基线，随后只实现测试要求的最小模块 | 先确认测试确实失败，再进入实现，避免测试对既有行为给出假阳性 |
+| 首次 Git 推送发生 `SSL_ERROR_SYSCALL` | 沙箱内到 GitHub 的 TLS 连接失败 | 使用获准的外部网络环境原命令重试，推送成功 | 保留本地提交，不改写历史；把网络问题与提交内容问题分开处理 |
 
 ### 9. 与参考项目的差异
 
@@ -384,7 +385,7 @@ ModelSettings.from_env
 - 分支：`rebuild/minicode-learning`
 - 提交：`274523e`
 - 提交信息：`feat(phase-01): add model adapter and mock model`
-- 远程状态：待推送
+- 远程状态：已推送至 `origin/rebuild/minicode-learning`
 
 ### 14. 下一阶段
 
