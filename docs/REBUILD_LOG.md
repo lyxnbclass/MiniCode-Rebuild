@@ -8,12 +8,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前阶段 | 阶段 0：仓库初始化与工程基线 |
-| 最近完成 | 工程基线实现及本地验收 |
+| 当前阶段 | 阶段 1：核心类型与模型适配层（待开始） |
+| 最近完成 | 阶段 0：仓库初始化与工程基线 |
 | 当前分支 | `rebuild/minicode-learning` |
-| 阶段实现提交 | `62ca406 chore(phase-00): bootstrap project and learning log` |
+| 最新阶段实现提交 | `62ca406 chore(phase-00): bootstrap project and learning log` |
 | 测试状态 | 阶段测试与全量测试均为 `4 passed` |
-| 下一步 | 推送阶段 0，然后规划阶段 1 |
+| 下一步 | 分析并规划阶段 1，不提前实现工具系统 |
 
 ## 总体架构
 
@@ -199,7 +199,7 @@ python -m venv .venv
 - 分支：`rebuild/minicode-learning`
 - 提交：`62ca406`
 - 提交信息：`chore(phase-00): bootstrap project and learning log`
-- 远程状态：待推送
+- 远程状态：已推送至 `origin/rebuild/minicode-learning`
 
 ### 14. 下一阶段
 
