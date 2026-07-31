@@ -11,9 +11,9 @@
 | 当前阶段 | 阶段 2：工具基础设施（待开始） |
 | 最近完成 | 阶段 1：核心类型与模型适配层 |
 | 当前分支 | `rebuild/minicode-learning` |
-| 最新阶段实现提交 | `62ca406 chore(phase-00): bootstrap project and learning log` |
+| 最新阶段实现提交 | `274523e feat(phase-01): add model adapter and mock model` |
 | 测试状态 | 阶段 1 测试 `28 passed`；全量回归 `32 passed` |
-| 下一步 | 提交并推送阶段 1，然后分析阶段 2 |
+| 下一步 | 推送阶段 1，然后分析阶段 2 |
 
 ## 总体架构
 
@@ -31,7 +31,7 @@ flowchart LR
 | 阶段 | 名称 | 状态 | 核心产物 | 提交 |
 |---|---|---|---|---|
 | 0 | 仓库初始化与工程基线 | 已完成 | Python 包、CLI、pytest、README、学习日志 | `62ca406` |
-| 1 | 核心类型与模型适配层 | 已完成 | 核心类型、`ModelAdapter`、`MockModel`、真实适配器 | 待提交 |
+| 1 | 核心类型与模型适配层 | 已完成 | 核心类型、`ModelAdapter`、`MockModel`、真实适配器 | `274523e` |
 | 2 | 工具基础设施 | 待开始 | 工具定义、上下文、结果和注册表 | - |
 | 3 | 只读工作区工具 | 待开始 | 读取、列举、搜索和路径保护 | - |
 | 4 | 写入、编辑和命令执行工具 | 待开始 | 安全写入、编辑、命令与权限决策 | - |
@@ -382,9 +382,9 @@ ModelSettings.from_env
 ### 13. Git 记录
 
 - 分支：`rebuild/minicode-learning`
-- 提交：待阶段验收后填写
+- 提交：`274523e`
 - 提交信息：`feat(phase-01): add model adapter and mock model`
-- 远程状态：待提交后推送
+- 远程状态：待推送
 
 ### 14. 下一阶段
 
