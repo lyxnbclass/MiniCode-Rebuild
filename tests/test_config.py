@@ -1,0 +1,83 @@
+"""Tests for model configuration loaded from environment variables."""
+
+from __future__ import annotations
+
+import pytest
+
+from minicode_rebuild.config import (
+    DEFAULT_MODEL,
+    DEFAULT_OPENAI_BASE_URL,
+    ModelConfigurationError,
+    ModelSettings,
+)
+
+
+def test_settings_use_deepseek_defaults() -> None:
+    settings = ModelSettings.from_env({"DEEPSEEK_API_KEY": "test-secret"})
+
+    assert settings.model == DEFAULT_MODEL == "deepseek-v4-pro"
+    assert settings.base_url == DEFAULT_OPENAI_BASE_URL == "https://api.deepseek.com"
+    assert settings.chat_completions_url == "https://api.deepseek.com/chat/completions"
+    assert settings.timeout_seconds == 120
+
+
+def test_settings_allow_openai_compatible_overrides() -> None:
+    settings = ModelSettings.from_env(
+        {
+            "MINICODE_MODEL": "local-model",
+            "OPENAI_BASE_URL": "https://example.test/v1/",
+            "OPENAI_API_KEY": "openai-test-secret",
+            "DEEPSEEK_API_KEY": "deepseek-test-secret",
+            "MINICODE_MODEL_TIMEOUT": "15",
+        }
+    )
+
+    assert settings.model == "local-model"
+    assert settings.base_url == "https://example.test/v1"
+    assert settings.api_key == "openai-test-secret"
+    assert settings.chat_completions_url == "https://example.test/v1/chat/completions"
+    assert settings.timeout_seconds == 15
+
+
+def test_settings_accept_full_chat_completions_url() -> None:
+    settings = ModelSettings.from_env(
+        {
+            "OPENAI_BASE_URL": "https://example.test/v1/chat/completions",
+            "OPENAI_API_KEY": "test-secret",
+        }
+    )
+
+    assert settings.chat_completions_url == "https://example.test/v1/chat/completions"
+
+
+def test_settings_require_api_key() -> None:
+    with pytest.raises(ModelConfigurationError, match="OPENAI_API_KEY"):
+        ModelSettings.from_env({})
+
+
+@pytest.mark.parametrize(
+    ("variable", "value", "message"),
+    [
+        ("OPENAI_BASE_URL", "file:///tmp/model", "http"),
+        ("MINICODE_MODEL_TIMEOUT", "zero", "integer"),
+        ("MINICODE_MODEL_TIMEOUT", "0", "greater than zero"),
+    ],
+)
+def test_settings_reject_invalid_values(
+    variable: str,
+    value: str,
+    message: str,
+) -> None:
+    environment = {
+        "OPENAI_API_KEY": "test-secret",
+        variable: value,
+    }
+
+    with pytest.raises(ModelConfigurationError, match=message):
+        ModelSettings.from_env(environment)
+
+
+def test_settings_repr_does_not_expose_api_key() -> None:
+    settings = ModelSettings.from_env({"OPENAI_API_KEY": "top-secret-value"})
+
+    assert "top-secret-value" not in repr(settings)
