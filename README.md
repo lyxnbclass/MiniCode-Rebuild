@@ -4,7 +4,7 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 
 ## 当前状态
 
-阶段 0“仓库初始化与工程基线”和阶段 1“核心类型与模型适配层”已经完成。
+阶段 0“仓库初始化与工程基线”、阶段 1“核心类型与模型适配层”和阶段 2“工具基础设施”已经完成。
 
 目前已经具备：
 
@@ -14,9 +14,11 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 - 使用 Provider 无关的消息、模型请求、响应和工具调用类型；
 - 使用确定性的 `MockModel` 编排模型层测试；
 - 通过 OpenAI-compatible Chat Completions 适配器调用真实服务；
+- 注册带 JSON Schema 参数声明的 Python 工具，并导出模型可见声明；
+- 在统一边界处理参数校验、未知工具、执行异常和超长结果；
 - 执行自动化测试。
 
-真实模型适配器目前是可独立使用的库能力，尚未接入 CLI。工作区工具和 Agent Loop 也尚未实现，后续会按 [`docs/REBUILD_LOG.md`](docs/REBUILD_LOG.md) 中的路线图逐阶段加入。
+真实模型适配器和工具注册表目前是可独立使用的库能力，尚未接入 CLI。具体工作区工具和 Agent Loop 也尚未实现，后续会按 [`docs/REBUILD_LOG.md`](docs/REBUILD_LOG.md) 中的路线图逐阶段加入。
 
 ## 环境要求
 
@@ -93,6 +95,38 @@ response = model.complete(
 )
 print(response.content)
 ```
+
+## 工具注册表
+
+阶段 2 提供可执行工具的最小公共边界。处理器只会在参数通过 schema 校验后运行；普通异常会转换为失败结果，工具输出也会统一限制长度。
+
+```python
+from pathlib import Path
+
+from minicode_rebuild.tooling import (
+    ToolContext,
+    ToolDefinition,
+    ToolRegistry,
+    ToolResult,
+)
+
+echo = ToolDefinition(
+    name="echo",
+    description="Return one text value.",
+    input_schema={
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"],
+        "additionalProperties": False,
+    },
+    handler=lambda arguments, context: ToolResult.success(arguments["text"]),
+)
+registry = ToolRegistry([echo])
+result = registry.execute("echo", {"text": "hello"}, ToolContext(Path.cwd()))
+print(result.output)
+```
+
+本阶段的 schema 校验器有意只实现已文档化的 JSON Schema 子集；工作区路径保护和具体读写工具属于后续阶段。
 
 ## 测试
 

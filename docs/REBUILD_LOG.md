@@ -8,12 +8,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前阶段 | 阶段 2：工具基础设施（待开始） |
+| 当前阶段 | 阶段 2：工具基础设施（进行中） |
 | 最近完成 | 阶段 1：核心类型与模型适配层 |
 | 当前分支 | `rebuild/minicode-learning` |
-| 最新阶段实现提交 | `274523e feat(phase-01): add model adapter and mock model` |
+| 最新提交 | `bc60f2c docs(phase-01): mark phase complete` |
 | 测试状态 | 阶段 1 测试 `28 passed`；全量回归 `32 passed` |
-| 下一步 | 推送阶段 1，然后分析阶段 2 |
+| 下一步 | 测试先行实现工具注册表并完成阶段 2 验收 |
 
 ## 总体架构
 
@@ -32,7 +32,7 @@ flowchart LR
 |---|---|---|---|---|
 | 0 | 仓库初始化与工程基线 | 已完成 | Python 包、CLI、pytest、README、学习日志 | `62ca406` |
 | 1 | 核心类型与模型适配层 | 已完成 | 核心类型、`ModelAdapter`、`MockModel`、真实适配器 | `274523e` |
-| 2 | 工具基础设施 | 待开始 | 工具定义、上下文、结果和注册表 | - |
+| 2 | 工具基础设施 | 进行中 | 工具定义、上下文、结果和注册表 | - |
 | 3 | 只读工作区工具 | 待开始 | 读取、列举、搜索和路径保护 | - |
 | 4 | 写入、编辑和命令执行工具 | 待开始 | 安全写入、编辑、命令与权限决策 | - |
 | 5 | 最小 Agent Loop | 待开始 | 有界模型/工具执行循环 | - |
@@ -390,3 +390,191 @@ ModelSettings.from_env
 ### 14. 下一阶段
 
 阶段 2 将实现可执行工具定义、上下文、结果和注册表，并加入参数校验、未知工具处理、异常隔离与结果长度限制。
+
+## 阶段 2：工具基础设施
+
+### 1. 阶段目标
+
+- 定义模型工具声明与 Python 执行函数之间的 `ToolDefinition` 边界。
+- 定义承载工作目录和一次执行共享状态的 `ToolContext`。
+- 使用 `ToolResult` 统一表达成功、失败、错误代码和输出截断信息。
+- 实现支持注册、查找、模型声明导出和执行的 `ToolRegistry`。
+- 在执行处理器之前校验参数，在执行之后统一隔离普通异常并限制结果长度。
+
+### 2. 本阶段非目标
+
+- 不实现 `read_file`、搜索、写入、编辑或命令执行等具体工具。
+- 不实现工作区路径解析、越界保护、危险操作审批或权限持久化；这些分别属于阶段 3 和阶段 4。
+- 不实现后台任务、并发工具调用、重试、Hooks、MCP 或 Agent Loop。
+- 不引入完整 JSON Schema 第三方实现；只支持当前工具参数需要且可明确测试的子集。
+
+### 3. 参考资料与源码分析
+
+| 参考项 | 路径或提交 | 学到的内容 | 本项目的取舍 |
+|---|---|---|---|
+| MiniCode 工具注册表 | `D:\code\MiniCode-Python\minicode\tooling.py`、提交 `4e5253b` | 工具定义需要把模型 schema、参数解析和执行函数绑定在一起，注册表负责统一查找和调用 | 保留稳定的定义与注册表边界，但让本项目的 `ToolDefinition` 直接复用阶段 1 的 `ModelTool` schema |
+| MiniCode 注册表索引修复 | 提交 `050c45a` | 工具数量增长后，名称查找不应每次线性扫描；重复名称也必须在注册时暴露 | 使用名称到定义的字典进行 O(1) 查找，并拒绝重复注册 |
+| MiniCode 校验与输出治理 | 提交 `3d1c2a8`、`dd6e934` | 模型参数和工具输出都不可信；校验错误、运行异常和超长结果需要在统一边界收敛 | 实现小型 JSON Schema 子集、稳定错误代码和统一头尾截断，不提前加入日志与工具专属截断策略 |
+| MiniClaudeCode 工具基础设施 | `https://github.com/Monet1016/MiniClaudeCode`，提交 `4adcec6` 的 `tooling.py` 与 `tests/test_tooling.py` | 最小注册表仍应覆盖未知工具、校验异常、运行异常、非法返回值和超长错误文本 | 吸收最小闭环测试思路，但不复制其后台任务、权限对象或运行时字段；这些能力留给后续阶段 |
+
+### 4. 设计方案
+
+#### 4.1 模块职责
+
+- `minicode_rebuild.tooling`：集中定义工具上下文、结果、可执行定义、参数校验错误和注册表。
+- `minicode_rebuild.core.ModelTool`：继续作为模型可见的只读声明；由 `ToolDefinition.to_model_tool()` 生成，避免执行函数泄漏到模型边界。
+- `ToolRegistry`：持有唯一名称索引，先校验参数，再调用处理器，最后检查并限制结果。
+
+#### 4.2 核心数据结构
+
+- `ToolContext`：包含 `cwd: Path` 和可变 `state`。注册表原样传递同一个上下文，不处理阶段 3 才定义的路径安全语义。
+- `ToolResult`：包含 `ok`、`output`、稳定的可选 `error_code`，以及 `truncated`、`original_length` 截断元数据。
+- `ToolDefinition`：包含名称、描述、对象型输入 schema、处理器和可选的单工具输出上限。
+- `ToolRegistry`：用字典保存定义；默认输出上限为 20,000 字符，单工具可以选择更小的上限。
+
+参数校验支持对象、数组、字符串、整数、数字、布尔值和 null，并处理 `required`、`properties`、`additionalProperties`、`items`、`enum` 与常用长度/数值边界。未支持的 schema 关键字不会被伪装成已经生效；定义注册时会检查 schema 自身结构。
+
+#### 4.3 执行流程
+
+```mermaid
+flowchart TD
+    A["工具名称、参数和 ToolContext"] --> B{"注册表中是否存在"}
+    B -->|否| C["返回 unknown_tool"]
+    B -->|是| D["按输入 schema 校验参数"]
+    D -->|失败| E["返回 invalid_arguments"]
+    D -->|通过| F["调用 ToolDefinition.handler"]
+    F -->|普通异常| G["返回 execution_error"]
+    F -->|返回类型错误| H["返回 invalid_result"]
+    F -->|ToolResult| I["统一限制输出长度"]
+    C --> I
+    E --> I
+    G --> I
+    H --> I
+    I --> J["返回规范化 ToolResult"]
+```
+
+`Exception` 会转换为失败结果，使单个工具错误不击穿未来的 Agent Loop；`KeyboardInterrupt` 和 `SystemExit` 不属于普通执行失败，保持可传播，以便用户中断和进程退出仍然有效。
+
+### 5. 实现内容
+
+| 文件 | 新增或修改 | 作用 |
+|---|---|---|
+| `src/minicode_rebuild/tooling.py` | 新增 | 定义工具上下文、结果、可执行定义、schema 校验器和注册表 |
+| `tests/test_tooling.py` | 新增 | 覆盖注册、模型声明导出、参数边界、异常隔离、返回协议和输出截断 |
+| `README.md` | 修改 | 说明阶段 2 的真实能力、边界和最小注册表示例 |
+| `docs/REBUILD_LOG.md` | 修改 | 记录阶段 2 的参考分析、设计、实现、验证与学习结论 |
+
+### 6. 关键代码解析
+
+#### 6.1 `ToolDefinition` 与 `ModelTool`
+
+`ToolDefinition` 是执行侧对象，包含处理器；`ModelTool` 是模型侧对象，只包含名称、描述和参数 schema。构造 `ToolDefinition` 时先检查根 schema 必须是对象，再借助 `ModelTool` 复用函数名称约束。`to_model_tool()` 返回 schema 的深拷贝，使 Provider 层永远看不到 Python 处理器。
+
+```python
+def to_model_tool(self) -> ModelTool:
+    return ModelTool(
+        name=self.name,
+        description=self.description,
+        parameters=deepcopy(dict(self.input_schema)),
+    )
+```
+
+#### 6.2 参数校验
+
+注册时，`_validate_schema_definition` 检查 schema 本身是否属于已支持子集，拒绝未知关键字、未定义的必填属性和矛盾边界。执行时，`_validate_value` 递归检查实际值，并用 `$.items[0].mode` 一类路径指出失败位置。整数校验显式排除 Python 中属于 `int` 子类的 `bool`，避免模型传入 `true` 后被当成数字 `1`。
+
+校验失败会返回 `error_code="invalid_arguments"`，处理器不会运行。这样未来的 Agent Loop 可以根据稳定错误代码做决策，而用户仍能从文本输出理解失败原因。
+
+#### 6.3 异常隔离与返回协议
+
+`ToolRegistry.execute()` 只捕获 `Exception`，将处理器普通异常转换为 `execution_error`。处理器若没有返回 `ToolResult`，则转换为 `invalid_result`。未知名称直接返回 `unknown_tool`。`KeyboardInterrupt` 和 `SystemExit` 继承自 `BaseException`，因此不会被误吞。
+
+```text
+name + arguments + context
+→ O(1) 查找定义
+→ schema 校验
+→ handler
+→ ToolResult 类型检查
+→ 统一输出限制
+```
+
+#### 6.4 结果长度限制
+
+注册表默认限制输出为 20,000 字符，每个定义可设置不少于 32 字符的更小上限。超过限制时同时保留开头和结尾，中间插入明确标记，并设置 `truncated=True` 与 `original_length`。成功结果、领域失败、校验错误和运行异常都经过同一终结步骤，因此长错误文本也无法绕过限制。
+
+### 7. 测试与验证
+
+#### 7.1 测试范围
+
+- 上下文工作目录规范化和共享状态传递。
+- 注册、查找、重复名称拒绝和 `ModelTool` 声明导出。
+- 根 schema、输出上限和处理器返回协议边界。
+- 必填属性、类型、额外属性、数值范围、嵌套数组与枚举校验。
+- 未知工具、普通执行异常、`KeyboardInterrupt` 和 `SystemExit`。
+- 成功结果、领域失败和超长校验错误的统一头尾截断。
+- 阶段 0 CLI 与阶段 1 模型适配层的完整回归。
+
+#### 7.2 执行命令
+
+```bash
+.\.venv\Scripts\python.exe -m pytest tests\test_tooling.py -q
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m compileall -q src tests
+git -c safe.directory=D:/code/MiNiCode-xxx diff --check
+```
+
+#### 7.3 实际结果
+
+- 测试先行检查：实现前在收集阶段出现 `ModuleNotFoundError: No module named 'minicode_rebuild.tooling'`，证明新测试确实覆盖尚未存在的能力。
+- 首轮实现：`19 passed, 1 failed`；唯一失败是必填属性错误文本使用 `requires property`，没有满足测试约定的 `required property` 表达。
+- 阶段测试：`20 passed in 0.12s`。
+- 全量回归：`52 passed in 1.29s`。
+- 编译检查：`compileall` 无错误输出，退出码为 `0`。
+- 差异检查：`git diff --check` 无错误输出，退出码为 `0`。
+
+### 8. 遇到的问题与解决过程
+
+| 问题 | 根因 | 解决方案 | 如何避免 |
+|---|---|---|---|
+| 首轮阶段测试有 1 项错误提示断言失败 | 实现使用“requires property”，测试约定检查“required property”；错误类型、错误代码和处理器短路均正确 | 统一为 `is missing required property`，保留 JSON 路径和属性名后重新运行全部测试 | 把错误代码作为机器边界，把少量稳定文本作为用户边界；修改提示后必须重跑失败用例与回归 |
+| 临时参考仓库首次清理因权限审核超时 | 递归删除触发了执行环境的自动权限审核，审核未在时限内完成 | 先确认解析后的精确目录，再用同一路径获得授权后清理成功 | 临时资源使用独立、明确路径；删除前验证目标，审核超时不等同于命令或目录不安全 |
+
+### 9. 与参考项目的差异
+
+参考 MiniCode 的当前工具层已经包含后台任务、权限对象、运行时会话、日志持久化和针对具体工具的截断规则。参考 MiniClaudeCode 也把后台任务元数据纳入 `ToolResult`。本阶段只建立未来 Agent Loop 必需的稳定执行边界：共享上下文、schema、处理器、规范结果和注册表。权限在阶段 4 结合真实写入与命令风险设计，后台任务则只有出现明确需求时才加入，避免为尚不存在的调用场景固化字段。
+
+与两个参考实现主要依赖每个工具自带 validator 的方式不同，本项目让 `ToolDefinition` 的模型可见 schema 同时成为执行前校验依据。这样声明和实际约束不会天然形成两套来源；代价是当前只支持经过测试的 JSON Schema 子集，并对不支持的关键字快速失败。
+
+### 10. 本阶段知识点
+
+- 模型可见声明和 Python 可执行定义职责不同，但应共享同一份参数 schema。
+- 工具边界需要同时防御不可信参数、不受控异常、错误返回类型和超长输出。
+- 错误文本服务于人，稳定错误代码服务于程序；两者一起让未来 Agent Loop 可以安全继续。
+- 捕获 `Exception` 而不是 `BaseException`，才能在隔离工具故障的同时保留用户中断和进程退出语义。
+
+### 11. 自测问题
+
+1. 为什么 `ToolDefinition` 不直接作为 `ModelRequest.tools` 的元素发送给 Provider？
+2. 为什么参数校验必须在处理器运行之前，而且处理器收到的是参数副本？
+3. 为什么输出限制必须同样作用于校验错误和运行异常？
+
+### 12. 阶段验收
+
+- [x] `ToolDefinition`、`ToolContext`、`ToolResult` 和 `ToolRegistry` 已实现。
+- [x] 工具可以转换为阶段 1 的 `ModelTool` 声明。
+- [x] 未知工具和无效参数返回稳定失败结果。
+- [x] 普通处理器异常不会击穿注册表边界。
+- [x] 所有结果路径都受字符长度上限保护。
+- [x] 阶段测试和全量回归测试通过。
+- [x] README 与学习文档反映真实实现边界。
+
+### 13. Git 记录
+
+- 分支：`rebuild/minicode-learning`
+- 提交：待创建
+- 计划提交信息：`feat(phase-02): implement tool registry`
+- 远程状态：待推送
+
+### 14. 下一阶段
+
+阶段 3 将在本注册表之上实现 `read_file`、`list_files`、`glob_search` 和 `grep_files`，并集中设计工作区路径解析、绝对路径与 `..` 越界保护、搜索结果上限和大文件读取边界。
