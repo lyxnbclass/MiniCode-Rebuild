@@ -8,12 +8,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前阶段 | 阶段 2：工具基础设施（进行中） |
-| 最近完成 | 阶段 1：核心类型与模型适配层 |
+| 当前阶段 | 阶段 3：只读工作区工具（待开始） |
+| 最近完成 | 阶段 2：工具基础设施 |
 | 当前分支 | `rebuild/minicode-learning` |
-| 最新提交 | `bc60f2c docs(phase-01): mark phase complete` |
-| 测试状态 | 阶段 1 测试 `28 passed`；全量回归 `32 passed` |
-| 下一步 | 测试先行实现工具注册表并完成阶段 2 验收 |
+| 最新阶段实现提交 | `a56c195 feat(phase-02): implement tool registry` |
+| 测试状态 | 阶段 2 测试 `20 passed`；全量回归 `52 passed` |
+| 下一步 | 分析阶段 3 的路径保护与只读工作区工具 |
 
 ## 总体架构
 
@@ -32,7 +32,7 @@ flowchart LR
 |---|---|---|---|---|
 | 0 | 仓库初始化与工程基线 | 已完成 | Python 包、CLI、pytest、README、学习日志 | `62ca406` |
 | 1 | 核心类型与模型适配层 | 已完成 | 核心类型、`ModelAdapter`、`MockModel`、真实适配器 | `274523e` |
-| 2 | 工具基础设施 | 进行中 | 工具定义、上下文、结果和注册表 | - |
+| 2 | 工具基础设施 | 已完成 | 工具定义、上下文、结果和注册表 | `a56c195` |
 | 3 | 只读工作区工具 | 待开始 | 读取、列举、搜索和路径保护 | - |
 | 4 | 写入、编辑和命令执行工具 | 待开始 | 安全写入、编辑、命令与权限决策 | - |
 | 5 | 最小 Agent Loop | 待开始 | 有界模型/工具执行循环 | - |
@@ -571,9 +571,9 @@ git -c safe.directory=D:/code/MiNiCode-xxx diff --check
 ### 13. Git 记录
 
 - 分支：`rebuild/minicode-learning`
-- 提交：待创建
-- 计划提交信息：`feat(phase-02): implement tool registry`
-- 远程状态：待推送
+- 提交：`a56c195`
+- 提交信息：`feat(phase-02): implement tool registry`
+- 远程状态：已推送至 `origin/rebuild/minicode-learning`
 
 ### 14. 下一阶段
 
