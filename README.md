@@ -4,7 +4,7 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 
 ## 当前状态
 
-阶段 0“仓库初始化与工程基线”、阶段 1“核心类型与模型适配层”和阶段 2“工具基础设施”已经完成。
+阶段 0“仓库初始化与工程基线”、阶段 1“核心类型与模型适配层”、阶段 2“工具基础设施”和阶段 3“只读工作区工具”已经完成。
 
 目前已经具备：
 
@@ -16,9 +16,12 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 - 通过 OpenAI-compatible Chat Completions 适配器调用真实服务；
 - 注册带 JSON Schema 参数声明的 Python 工具，并导出模型可见声明；
 - 在统一边界处理参数校验、未知工具、执行异常和超长结果；
+- 安全解析工作区路径，阻止绝对路径、`..` 和符号链接逃逸；
+- 读取文件、列举目录、按 glob 查找路径和按正则搜索 UTF-8 文本；
+- 限制单次读取窗口、目录/搜索结果、搜索文件大小和最终工具输出；
 - 执行自动化测试。
 
-真实模型适配器和工具注册表目前是可独立使用的库能力，尚未接入 CLI。具体工作区工具和 Agent Loop 也尚未实现，后续会按 [`docs/REBUILD_LOG.md`](docs/REBUILD_LOG.md) 中的路线图逐阶段加入。
+真实模型适配器、工具注册表和只读工作区工具目前是可独立使用的库能力，尚未接入 CLI。写入/命令工具和 Agent Loop 也尚未实现，后续会按 [`docs/REBUILD_LOG.md`](docs/REBUILD_LOG.md) 中的路线图逐阶段加入。
 
 ## 环境要求
 
@@ -126,7 +129,34 @@ result = registry.execute("echo", {"text": "hello"}, ToolContext(Path.cwd()))
 print(result.output)
 ```
 
-本阶段的 schema 校验器有意只实现已文档化的 JSON Schema 子集；工作区路径保护和具体读写工具属于后续阶段。
+本阶段的 schema 校验器有意只实现已文档化的 JSON Schema 子集；具体写入、编辑和命令执行工具属于后续阶段。
+
+## 只读工作区工具
+
+阶段 3 提供四个可以直接注册的定义：`read_file`、`list_files`、`glob_search` 和 `grep_files`。所有路径先解析为真实路径，再检查是否仍属于 `ToolContext.cwd`；工作区内绝对路径可用，任何指向工作区外的绝对路径、`..` 或符号链接都会被拒绝。
+
+```python
+from pathlib import Path
+
+from minicode_rebuild.tooling import ToolContext, ToolRegistry
+from minicode_rebuild.tools import READ_ONLY_TOOLS
+
+registry = ToolRegistry(READ_ONLY_TOOLS)
+result = registry.execute(
+    "grep_files",
+    {"pattern": "ToolRegistry", "include": "**/*.py", "limit": 20},
+    ToolContext(Path.cwd()),
+)
+print(result.output)
+```
+
+安全和输出边界：
+
+- `read_file` 默认读取 8,000 个字符，单次最多 16,000 个字符，并返回继续读取所需的 offset；
+- `list_files`、`glob_search` 和 `grep_files` 都有结果数量上限；
+- `grep_files` 最多扫描 5,000 个文件，跳过超过 1 MiB、非 UTF-8 或不可读的文件，并把单行预览限制为 500 个字符；
+- 常见缓存、虚拟环境、构建和版本控制目录不会被递归搜索；
+- 每个工具仍受注册表 20,000 字符的最终输出上限保护。
 
 ## 测试
 
