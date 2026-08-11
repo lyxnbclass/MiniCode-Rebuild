@@ -8,12 +8,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前阶段 | 阶段 4：写入、编辑和命令执行工具（待开始） |
-| 最近完成 | 阶段 3：只读工作区工具 |
+| 当前阶段 | 阶段 5：最小 Agent Loop（待开始） |
+| 最近完成 | 阶段 4：写入、编辑和命令执行工具 |
 | 当前分支 | `rebuild/minicode-learning` |
-| 最新阶段实现提交 | `8764e55 feat(phase-03): add read-only workspace tools` |
-| 测试状态 | 阶段 3 测试 `43 passed, 2 skipped`；全量回归 `95 passed, 2 skipped` |
-| 下一步 | 分析阶段 4 的写入原子性、命令风险和权限决策参考实现 |
+| 最新阶段实现提交 | `0ad29a4 feat(phase-04): add gated mutation tools` |
+| 测试状态 | 阶段 3 测试 `44 passed, 2 skipped`；阶段 4 测试 `54 passed`；全量回归 `150 passed, 2 skipped` |
+| 下一步 | 分析阶段 5 的模型—工具有界循环、停止条件和错误回传参考实现 |
 
 ## 总体架构
 
@@ -34,7 +34,7 @@ flowchart LR
 | 1 | 核心类型与模型适配层 | 已完成 | 核心类型、`ModelAdapter`、`MockModel`、真实适配器 | `274523e` |
 | 2 | 工具基础设施 | 已完成 | 工具定义、上下文、结果和注册表 | `a56c195` |
 | 3 | 只读工作区工具 | 已完成 | 读取、列举、搜索和路径保护 | `8764e55` |
-| 4 | 写入、编辑和命令执行工具 | 待开始 | 安全写入、编辑、命令与权限决策 | - |
+| 4 | 写入、编辑和命令执行工具 | 已完成 | 安全写入、编辑、命令与权限决策 | `0ad29a4` |
 | 5 | 最小 Agent Loop | 待开始 | 有界模型/工具执行循环 | - |
 | 6 | 可用的 CLI 与运行配置 | 待开始 | 交互模式、Headless 模式和运行配置 | - |
 | 7 | 上下文预算与压缩 | 待开始 | 预算、裁剪、摘要和降级策略 | - |
@@ -778,3 +778,197 @@ git diff --check
 ### 14. 下一阶段
 
 阶段 4 将实现 `write_file`、`edit_file`、`patch_file` 和 `run_command`，在任何写入或命令执行前建立权限风险分类、危险命令检测以及允许/拒绝/一次性授权机制。
+
+## 阶段 4：写入、编辑和命令执行工具
+
+### 1. 阶段目标
+
+- 实现 `write_file`、`edit_file`、`patch_file` 和 `run_command`。
+- 为文件创建、文件覆盖、普通命令和危险命令建立明确风险等级。
+- 提供默认拒绝、允许一次、会话内允许和明确拒绝的可测试权限决策。
+- 文件变更必须先完整计算下一版本、生成有限 diff 预览并获得授权，再以同目录临时文件和原子替换提交。
+- 命令名与参数必须结构化分离，使用 `subprocess.run([...], shell=False)`，拒绝管道、重定向和其他 shell 片段。
+- 复用阶段 3 工作区真实路径守卫，写入路径和命令 cwd 都不能逃逸工作区。
+
+### 2. 本阶段非目标
+
+- 不把写入或命令工具接入 CLI 或 Agent Loop；统一编排属于阶段 5 和阶段 6。
+- 不实现后台命令、交互式命令、PTY、流式输出、命令并发或进程恢复。
+- 不持久化权限到用户目录，不加入“永久允许/永久拒绝”；会话持久化尚未建立。
+- 不支持 shell 命令字符串、管道、重定向、命令连接符、环境变量展开或平台 shell builtin。
+- `patch_file` 使用可验证的多组精确文本替换，不解析 unified diff，也不实现模糊匹配。
+- 不创建 checkpoint 或 rewind；它们属于阶段 8。
+
+### 3. 参考资料与源码分析
+
+| 参考项 | 路径或提交 | 学到的内容 | 本项目的取舍 |
+|---|---|---|---|
+| MiniCode 权限管理 | `D:\code\MiniCode-Python\minicode\permissions.py`、提交 `4e5253b`、`ac023ff`、`dd6e934` | 权限请求需要精确 scope、拒绝优先、风险原因和可注入 prompt；Windows 路径大小写与分隔符需要专门测试 | 只保留阶段 4 必需的请求、风险和会话决策，不读写全局权限文件，不允许工作区外路径 |
+| MiniCode 文件审查边界 | `minicode/file_review.py`、`write_file.py`、提交 `4e5253b`、`1169330` | 所有写工具应共享“读取旧内容 → diff → 授权 → 写入”的唯一边界 | 增加同目录临时文件、flush/fsync、权限继承和 `os.replace`；参考实现最终直接 `write_text`，本项目不沿用这一非原子路径 |
+| MiniCode 精确编辑与批量补丁 | `minicode/tools/edit_file.py`、`patch_file.py`，提交 `4e5253b`、`3d1c2a8` | 单次编辑遇到多个匹配必须拒绝并要求更多上下文；多替换应先全部验证后一次提交 | 实现精确唯一替换与显式 `replace_all`；不加入 fuzzy/difflib 相似匹配，减少模型意外改错位置 |
+| MiniCode 命令执行 | `minicode/tools/run_command.py`、提交 `8d83e84`、`3d1c2a8`、`b2f6720` | 命令需要 cwd、超时、输出合并/截断、跨平台解码和稳定失败结果 | 只实现前台 `subprocess.run`；UTF-8 解码失败用替换字符；命令输出继续受阶段 2 的 20,000 字符总上限保护 |
+| MiniCode shell 安全修复 | 提交 `445093a` 与 `tests/test_tools.py` | 仅靠命令 allowlist 不足以识别 `curl | sh`、`rm -rf | cat`、PowerShell `iex` 等嵌套危险载荷 | 阶段 4 完全不接受 shell 片段；命令字段只允许单个可执行文件名，参数作为数组直传，避免进入 shell 语法解释层 |
+
+### 4. 设计方案
+
+#### 4.1 模块职责与依赖
+
+```mermaid
+flowchart TD
+    A["ToolRegistry"] --> B["文件工具 write/edit/patch"]
+    A --> C["命令工具 run_command"]
+    B --> D["工作区路径守卫"]
+    C --> D
+    B --> E["权限管理器（你在这里）"]
+    C --> E
+    B --> F["原子文件变更边界"]
+    C --> G["subprocess shell=False"]
+    E --> H["可注入用户决策回调"]
+```
+
+- `minicode_rebuild.permissions`：定义风险等级、权限请求/决策、危险命令分类和默认拒绝的 `PermissionManager`。
+- `minicode_rebuild.file_changes`：读取 UTF-8 旧内容、生成有限 unified diff、请求授权并原子替换目标文件。
+- `minicode_rebuild.tools.write`：实现完整写入、单次精确编辑和事务式多替换补丁。
+- `minicode_rebuild.tools.command`：校验结构化命令、解析 cwd、风险分类、权限请求、超时执行和结果规范化。
+- `ToolContext.permissions`：可选注入权限管理器；只读工具不使用它，所有变更工具在缺失时默认拒绝。
+
+#### 4.2 权限模型
+
+| 风险等级 | 典型操作 | 默认行为 |
+|---|---|---|
+| `LOW` | 阶段 3 工作区内只读工具 | 无需提示 |
+| `MEDIUM` | 创建新文件、已知只读命令 | 需要明确授权 |
+| `HIGH` | 覆盖现有文件、未知命令、网络/构建命令 | 需要明确授权并展示原因 |
+| `CRITICAL` | Git 强制/清理、递归删除、解释器或 shell、磁盘与权限命令 | 强提示；仍只能通过精确 scope 授权 |
+
+权限回调只接受三种结果：
+
+- `allow_once`：仅放行当前这次请求，不写入任何集合。
+- `allow_session`：仅对当前精确 scope（文件真实路径或完整命令签名）在本进程内复用。
+- `deny`：拒绝当前操作；没有回调、无效结果或回调异常也按拒绝处理。
+
+#### 4.3 文件变更流程
+
+```mermaid
+flowchart TD
+    A["解析工作区内目标"] --> B["读取旧内容/判断新文件"]
+    B --> C["完整计算 next_content"]
+    C --> D{"全部替换规则有效?"}
+    D -->|"否"| E["返回错误，磁盘不变"]
+    D -->|"是"| F["生成有限 diff 与风险请求"]
+    F --> G{"用户授权?"}
+    G -->|"否"| E
+    G -->|"是"| H["同目录创建临时文件"]
+    H --> I["写入、flush、fsync"]
+    I --> J["os.replace 原子提交"]
+    J --> K["返回成功"]
+```
+
+原子替换前的任何失败都不会截断或部分覆盖原文件。临时文件与目标位于同一目录，避免跨文件系统移动失去原子性；已有文件的权限位会复制到临时文件。
+
+#### 4.4 四个工具契约
+
+| 工具 | 关键输入 | 决策规则 | 失败时保证 |
+|---|---|---|---|
+| `write_file` | `path`、`content` | 新文件 `MEDIUM`，覆盖 `HIGH` | 未授权或写入失败时旧文件不变 |
+| `edit_file` | `path`、`old`、`new`、可选 `replace_all` | 默认只允许唯一精确匹配 | 缺失/多匹配时不提示、不写入 |
+| `patch_file` | `path`、`replacements[]` | 全部规则按顺序在内存中成功后只提示一次 | 任一规则失败则整个补丁不落盘 |
+| `run_command` | `command`、`args[]`、可选 `cwd`、`timeout` | 所有命令都授权；风险影响提示强度 | 拒绝时不启动进程；超时返回有限部分输出 |
+
+文件内容单次最多 1,000,000 字符，diff 预览最多 12,000 字符；命令超时默认 30 秒、最多 300 秒，输出最终由注册表限制为 20,000 字符。
+
+### 5. 实现内容
+
+- 新增 `permissions.py`，提供风险等级、权限请求、权限决策、默认拒绝管理器及文件/命令风险分类。
+- `ToolContext` 增加可选 `permissions`，保持只读工具无需权限，同时让所有变更工具共享同一授权入口。
+- 新增 `file_changes.py`，集中处理旧内容读取、有限 unified diff、授权和同目录原子替换。
+- 新增 `tools/write.py`，实现 `write_file`、`edit_file`、`patch_file` 及稳定 JSON Schema。
+- 新增 `tools/command.py`，实现结构化 argv、工作区 cwd、风险请求、超时和稳定进程结果。
+- 从 `minicode_rebuild.tools` 导出 `WRITE_TOOLS`、`MUTATING_TOOLS` 和四个独立工具定义。
+- 新增 54 个阶段测试，覆盖默认拒绝、会话 scope、原子失败、事务补丁、命令危险度、Windows 可执行文件后缀、shell 片段拒绝、cwd 越界、超时和输出限制。
+
+### 6. 关键代码解析
+
+#### 6.1 失败关闭的权限边界
+
+`PermissionManager.authorize()` 只认可 `allow_once`、`allow_session` 和 `deny`。未提供回调返回 `permission_required`；无效结果、显式拒绝或回调异常都返回拒绝，不会因审批组件故障而放行操作。会话授权仅保存请求的完整 scope，不按命令名或目录做宽泛匹配。
+
+#### 6.2 文件变更只提交完整下一版本
+
+三个文件工具先在内存中计算完整 `next_content`。授权前不会创建父目录；授权后使用目标同目录临时文件，完成写入、flush、fsync 和权限位复制后才调用 `os.replace`。替换失败会清理临时文件并保留原文件。
+
+#### 6.3 命令不进入 shell 解释层
+
+`run_command` 的 `command` 必须是单个可执行文件名，路径、空格和 shell 连接字符会在授权前被拒绝。参数保持数组形式传给 `subprocess.run`，并显式设置 `shell=False`。cwd 使用阶段 3 的真实路径守卫，超时、找不到程序、非零退出和输出截断都有稳定结果。
+
+### 7. 测试与验证
+
+测试先行红灯：新增测试首次运行时，`permissions`、`file_changes`、`tools.write` 和 `tools.command` 尚不存在，3 个测试模块按预期在收集阶段失败。
+
+实现后的真实验证：
+
+```text
+python -m pytest tests/test_permissions.py tests/test_write_tools.py tests/test_command_tool.py -q
+54 passed in 0.39s
+
+python -m pytest -q
+150 passed, 2 skipped in 1.88s
+
+python -m compileall -q src
+compileall: passed
+
+git diff --check
+passed
+```
+
+两个跳过项仍是阶段 3 已记录的 Windows 环境符号链接权限测试，不是阶段 4 回归失败。
+
+恢复审核时另外补充了 4 个回归用例：阶段 3 的 `grep_files` 现在会在 `include` 过滤前统计候选文件，避免过滤条件绕过 5,000 个候选上限（`d5bbab9`）；阶段 4 会先移除 `.exe`、`.cmd`、`.bat`、`.com` 等 Windows 可执行文件后缀，再分类 `git`、解释器和递归删除命令，避免危险命令被降级为普通未知命令。
+
+### 8. 风险与限制
+
+- `run_command` 仍可通过合法可执行文件产生副作用，因此所有命令都必须授权，风险分类只影响提示强度而不替代授权。
+- 会话授权仅存在于当前 `PermissionManager` 实例，不跨进程持久化。
+- `patch_file` 只支持精确文本替换，不支持 unified diff 或模糊匹配。
+- 文件工具只处理 UTF-8 文本，单次内容上限为 1,000,000 字符。
+- 命令执行是同步前台模式，不提供 PTY、后台任务、流式读取或交互输入。
+
+### 9. 与参考项目的差异
+
+参考 MiniCode 提供更丰富的权限持久化、交互审批和后台命令能力。本阶段只保留 Agent Loop 建立前可独立验证的最小安全边界：精确 scope、失败关闭、原子文件提交和无 shell 的前台命令。
+
+参考实现的文件审查最终仍可能直接写目标文件；本项目把审查与原子提交合并为唯一公共函数，避免各写工具分别实现不一致的落盘流程。
+
+### 10. 本阶段知识点
+
+- 风险分类不能等同于授权；即使是只读命令也需要明确决策。
+- 文件原子性要求临时文件与目标位于同一目录，并在替换失败时清理临时状态。
+- 批量编辑必须先验证全部规则，再执行一次落盘，否则后续规则失败会留下部分修改。
+- 禁止 shell 字符串比维护不断扩大的危险片段黑名单更容易形成清晰边界。
+
+### 11. 自测问题
+
+1. 为什么 `allow_session` 必须绑定完整 scope，而不能只绑定工具名？
+2. 为什么 diff 预览和授权必须发生在创建父目录之前？
+3. 为什么 `shell=False` 仍不能取消命令权限审批？
+
+### 12. 阶段验收
+
+- [x] 四个变更工具具有稳定 schema 和导出顺序。
+- [x] 缺少权限管理器时所有变更操作默认拒绝。
+- [x] 文件创建、覆盖、精确编辑和批量补丁受路径守卫与原子提交保护。
+- [x] 命令名、argv、cwd、超时和输出均有明确边界。
+- [x] 危险 Git、递归删除和解释器命令被标记为关键风险。
+- [x] 阶段测试、全量回归、编译和 diff 检查通过。
+- [x] README 与重建日志反映真实实现和限制。
+
+### 13. Git 记录
+
+- 分支：`rebuild/minicode-learning`
+- 实现提交：`0ad29a4`
+- 提交信息：`feat(phase-04): add gated mutation tools`
+- 远程策略：本阶段提交通过开发分支推送，不直接修改 `master`。
+
+### 14. 下一阶段
+
+阶段 5 将实现最小 Agent Loop：把模型请求、工具声明、工具调用执行和结果回传组织成有最大步数与明确停止条件的循环，并为未知工具、失败结果和模型异常建立可测试行为。
