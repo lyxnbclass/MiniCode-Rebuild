@@ -331,13 +331,13 @@ def _grep_files(
             if files_scanned >= MAX_GREP_FILES:
                 scan_limited = True
                 break
+            files_scanned += 1
             relative_to_search = file_path.relative_to(search_root)
             if not _matches_include(relative_to_search, include_pattern):
                 continue
             if not _is_safe_candidate(file_path, workspace_root):
                 skipped_unreadable += 1
                 continue
-            files_scanned += 1
             try:
                 if file_path.stat().st_size > MAX_GREP_FILE_BYTES:
                     skipped_large += 1
