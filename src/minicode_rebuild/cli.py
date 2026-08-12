@@ -191,7 +191,7 @@ def _run_interactive(
 ) -> int:
     output.write(
         "MiniCode Rebuild interactive\n"
-        "Commands: /help, /stats, /exit\n"
+        "Commands: /help, /stats, /compact, /exit\n"
     )
     output.flush()
     while True:
@@ -208,10 +208,19 @@ def _run_interactive(
             output.write("Goodbye.\n")
             return EXIT_OK
         if user_message == "/help":
-            output.write("Commands: /help, /stats, /exit\n")
+            output.write("Commands: /help, /stats, /compact, /exit\n")
             continue
         if user_message == "/stats":
             output.write(f"[stats] {format_stats(session.stats)}\n")
+            continue
+        if user_message == "/compact":
+            compaction = session.compact_history()
+            status = "completed" if compaction.compacted else "not needed"
+            output.write(
+                f"Context compact {status}: "
+                f"{compaction.before_tokens} -> {compaction.after_tokens} tokens; "
+                f"removed={compaction.removed_messages}\n"
+            )
             continue
         code = _print_result(session, session.run(user_message), output)
         if code != EXIT_OK:

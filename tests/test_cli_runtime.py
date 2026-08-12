@@ -11,6 +11,7 @@ from minicode_rebuild.cli_runtime import (
     make_permission_prompt,
 )
 from minicode_rebuild.config import RuntimeSettings
+from minicode_rebuild.context import ContextManager, ContextPolicy
 from minicode_rebuild.core import ModelResponse, TokenUsage
 from minicode_rebuild.models import MockModel
 from minicode_rebuild.permissions import (
@@ -48,7 +49,7 @@ def test_session_accumulates_turn_and_usage_stats(tmp_path: Path) -> None:
         output_tokens=3,
     )
     assert format_stats(session.stats) == (
-        "turns=2 steps=2 tools=0 tokens=8 (input=5 output=3)"
+        "turns=2 steps=2 tools=0 tokens=8 (input=5 output=3) compactions=0"
     )
 
 
@@ -73,3 +74,61 @@ def test_permission_prompt_explains_request_and_parses_choices() -> None:
         assert "Write README.md" in output.getvalue()
         assert "risk=high" in output.getvalue()
         assert "overwrite" in output.getvalue()
+
+
+def test_session_manual_compaction_updates_history_and_stats(tmp_path: Path) -> None:
+    session = AgentSession(
+        model=MockModel(
+            [
+                ModelResponse(content="a" * 120),
+                ModelResponse(content="b" * 120),
+            ]
+        ),
+        tools=ToolRegistry(),
+        context=ToolContext(tmp_path),
+        settings=RuntimeSettings(max_steps=3, system_prompt="Be precise"),
+        output=StringIO(),
+        context_manager=ContextManager(
+            ContextPolicy(max_tokens=1000, keep_recent_turns=1)
+        ),
+    )
+    session.run("first " + "x" * 120)
+    session.run("second " + "y" * 120)
+
+    result = session.compact_history()
+
+    assert result.compacted is True
+    assert session.history[0].content.startswith("[Context summary]")
+    assert session.stats.compactions == 1
+
+
+def test_session_automatically_compacts_at_threshold(tmp_path: Path) -> None:
+    session = AgentSession(
+        model=MockModel(
+            [
+                ModelResponse(content="a" * 200),
+                ModelResponse(content="b" * 200),
+                ModelResponse(content="final"),
+            ]
+        ),
+        tools=ToolRegistry(),
+        context=ToolContext(tmp_path),
+        settings=RuntimeSettings(max_steps=3, system_prompt="Be precise"),
+        output=StringIO(),
+        context_manager=ContextManager(
+            ContextPolicy(
+                max_tokens=120,
+                trigger_ratio=0.5,
+                keep_recent_turns=1,
+            )
+        ),
+    )
+
+    session.run("first " + "x" * 200)
+    session.run("second " + "y" * 200)
+
+    assert session.stats.compactions >= 1
+    assert any(
+        message.content.startswith("[Context summary]")
+        for message in session.history
+    )

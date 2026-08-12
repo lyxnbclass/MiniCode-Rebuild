@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from minicode_rebuild.agent import AgentStopReason, run_agent_turn
+from minicode_rebuild.context import ContextManager, ContextPolicy
 from minicode_rebuild.core import (
     Message,
     MessageRole,
@@ -196,6 +197,69 @@ def test_tool_observer_receives_each_call_and_result(tmp_path: Path) -> None:
 
     assert result.completed is True
     assert seen == [(call, ToolResult.success("hello"))]
+
+
+def test_message_preparer_compacts_current_turn_before_next_model_request(
+    tmp_path: Path,
+) -> None:
+    call = ToolCall(id="call-1", name="echo", arguments={"text": "hello"})
+    model = MockModel(
+        [ModelResponse(tool_calls=(call,)), ModelResponse(content="Done")]
+    )
+    prepared_sizes: list[int] = []
+
+    def prepare(messages: tuple[Message, ...]) -> tuple[Message, ...]:
+        prepared_sizes.append(len(messages))
+        if messages and messages[-1].role is MessageRole.TOOL:
+            return (
+                *messages[:-1],
+                Message(
+                    role=MessageRole.TOOL,
+                    content='{"compacted":true}',
+                    tool_call_id=messages[-1].tool_call_id,
+                ),
+            )
+        return messages
+
+    result = run_agent_turn(
+        model=model,
+        tools=ToolRegistry([echo_tool()]),
+        context=ToolContext(tmp_path),
+        user_message="Help me",
+        message_preparer=prepare,
+    )
+
+    assert result.completed is True
+    assert prepared_sizes == [1, 3]
+    assert model.requests[1].messages[-1].content == '{"compacted":true}'
+
+
+def test_context_manager_trims_current_tool_result_before_next_request(
+    tmp_path: Path,
+) -> None:
+    long_result = "HEAD-" + "x" * 3000 + "-TAIL"
+    call = ToolCall(id="call-1", name="echo", arguments={"text": "ignored"})
+    model = MockModel(
+        [ModelResponse(tool_calls=(call,)), ModelResponse(content="Done")]
+    )
+    manager = ContextManager(
+        ContextPolicy(max_tokens=10_000, tool_result_tokens=60)
+    )
+
+    result = run_agent_turn(
+        model=model,
+        tools=ToolRegistry([echo_tool(ToolResult.success(long_result))]),
+        context=ToolContext(tmp_path),
+        user_message="Help me",
+        message_preparer=lambda messages: manager.compact(messages).messages,
+    )
+
+    assert result.completed is True
+    tool_payload = json.loads(model.requests[1].messages[-1].content)
+    assert tool_payload["truncated"] is True
+    assert "HEAD-" in tool_payload["output"]
+    assert "-TAIL" in tool_payload["output"]
+    assert len(tool_payload["output"]) < len(long_result)
 
 
 def test_empty_response_stops_explicitly(tmp_path: Path) -> None:

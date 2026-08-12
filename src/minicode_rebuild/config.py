@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+from minicode_rebuild.context import ContextPolicy
+
 DEFAULT_MODEL = "deepseek-v4-pro"
 DEFAULT_OPENAI_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL_TIMEOUT_SECONDS = 120
@@ -97,6 +99,7 @@ class RuntimeSettings:
 
     max_steps: int = DEFAULT_MAX_STEPS
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    context_policy: ContextPolicy = field(default_factory=ContextPolicy)
 
     def __post_init__(self) -> None:
         if isinstance(self.max_steps, bool) or not isinstance(self.max_steps, int):
@@ -107,6 +110,8 @@ class RuntimeSettings:
             )
         if not isinstance(self.system_prompt, str):
             raise ModelConfigurationError("MINICODE_SYSTEM_PROMPT must be text")
+        if not isinstance(self.context_policy, ContextPolicy):
+            raise ModelConfigurationError("context_policy must be a ContextPolicy")
         object.__setattr__(self, "system_prompt", self.system_prompt.strip())
 
     @classmethod
@@ -124,7 +129,52 @@ class RuntimeSettings:
             raise ModelConfigurationError(
                 "MINICODE_MAX_STEPS must be an integer"
             ) from error
+
+        def integer(name: str, default: int) -> int:
+            raw = env.get(name, str(default)).strip()
+            try:
+                value = int(raw)
+            except ValueError as error:
+                raise ModelConfigurationError(f"{name} must be an integer") from error
+            if value < 1:
+                raise ModelConfigurationError(
+                    f"{name} must be greater than zero"
+                )
+            return value
+
+        trigger_name = "MINICODE_CONTEXT_TRIGGER"
+        trigger_raw = env.get(
+            trigger_name, str(ContextPolicy().trigger_ratio)
+        ).strip()
+        try:
+            trigger = float(trigger_raw)
+        except ValueError as error:
+            raise ModelConfigurationError(
+                f"{trigger_name} must be a number"
+            ) from error
+        if not 0 < trigger <= 1:
+            raise ModelConfigurationError(
+                f"{trigger_name} must be greater than zero and at most one"
+            )
+
         return cls(
             max_steps=max_steps,
             system_prompt=env.get("MINICODE_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT),
+            context_policy=ContextPolicy(
+                max_tokens=integer(
+                    "MINICODE_CONTEXT_TOKENS", ContextPolicy().max_tokens
+                ),
+                trigger_ratio=trigger,
+                keep_recent_turns=integer(
+                    "MINICODE_KEEP_RECENT_TURNS",
+                    ContextPolicy().keep_recent_turns,
+                ),
+                tool_result_tokens=integer(
+                    "MINICODE_TOOL_RESULT_TOKENS",
+                    ContextPolicy().tool_result_tokens,
+                ),
+                summary_tokens=integer(
+                    "MINICODE_SUMMARY_TOKENS", ContextPolicy().summary_tokens
+                ),
+            ),
         )
