@@ -4,7 +4,7 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 
 ## 当前状态
 
-阶段 0“仓库初始化与工程基线”、阶段 1“核心类型与模型适配层”、阶段 2“工具基础设施”、阶段 3“只读工作区工具”、阶段 4“写入、编辑和命令执行工具”和阶段 5“最小 Agent Loop”已经完成。
+阶段 0“仓库初始化与工程基线”至阶段 6“可用的 CLI 与运行配置”已经完成。
 
 目前已经具备：
 
@@ -24,9 +24,12 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 - 以参数数组和 `shell=False` 在工作区内执行有界前台命令；
 - 在有最大步数的 Agent Loop 中调用模型、顺序执行工具并回填结构化结果；
 - 明确区分最终响应、空响应、模型异常和步数上限四种停止原因；
+- 使用交互式 CLI 连续对话，或通过 Headless 模式执行单次任务；
+- 在终端查看工具调用状态、停止结果和基础会话统计；
+- 通过友好配置错误、安全权限提示和 Ctrl-C/EOF 处理退出；
 - 执行自动化测试。
 
-真实模型适配器、工具注册表、安全工作区工具和最小 Agent Loop 目前是可独立使用的库能力，尚未接入 CLI。可用的交互式及 Headless CLI 会在阶段 6 按 [`docs/REBUILD_LOG.md`](docs/REBUILD_LOG.md) 中的路线图加入。
+真实模型适配器、工具注册表、安全工作区工具和最小 Agent Loop 已经接入 CLI。阶段 7 将继续加入上下文预算和压缩。
 
 ## 环境要求
 
@@ -82,10 +85,43 @@ python -m minicode_rebuild --help
 | `MINICODE_MODEL` | `deepseek-v4-pro` | 模型名称 |
 | `OPENAI_BASE_URL` | `https://api.deepseek.com` | API 基址或完整 `/chat/completions` 地址 |
 | `MINICODE_MODEL_TIMEOUT` | `120` | 请求超时秒数，必须是正整数 |
+| `MINICODE_MAX_STEPS` | `12` | 每轮最大模型调用步数，必须是正整数 |
+| `MINICODE_SYSTEM_PROMPT` | 内置安全提示 | 覆盖本进程使用的系统提示 |
 | `DEEPSEEK_API_KEY` | 无 | DeepSeek API Key |
 | `OPENAI_API_KEY` | 无 | 通用 OpenAI-compatible API Key，优先级高于 `DEEPSEEK_API_KEY` |
 
 项目不会自动加载 `.env`。运行调用代码前，应由终端、进程管理器或其他安全配置机制注入环境变量。缺少密钥时，真实适配器配置会给出明确错误；`MockModel` 不需要任何密钥。
+
+## CLI 运行方式
+
+无需密钥先运行完整 MockModel 工具演示：
+
+```powershell
+minicode-rebuild --demo "inspect this workspace"
+```
+
+使用真实 OpenAI-compatible 模型执行一次 Headless 请求：
+
+```powershell
+$env:OPENAI_API_KEY="your-key"
+minicode-rebuild "分析当前项目结构"
+```
+
+也可以从标准输入读取单次任务：
+
+```powershell
+"解释 README" | minicode-rebuild --headless
+```
+
+启动基础交互模式：
+
+```powershell
+minicode-rebuild --interactive
+```
+
+交互模式提供 `/help`、`/stats` 和 `/exit`。写文件和运行命令会显示风险与操作详情，并要求选择一次允许、会话允许或拒绝。Headless 模式默认拒绝所有变更；只有明确传入 `--allow-mutations` 才会在本次运行内逐项自动批准，并在标准错误输出警告。
+
+每轮会输出模型步数、工具次数和模型返回的 token 用量。当前统计仅存在于进程内；上下文压缩和会话持久化分别属于阶段 7、8。
 
 最小的库调用边界如下：
 

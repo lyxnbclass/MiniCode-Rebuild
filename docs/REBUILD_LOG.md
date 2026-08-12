@@ -8,12 +8,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前阶段 | 阶段 6：可用的 CLI 与运行配置（待开始） |
-| 最近完成 | 阶段 5：最小 Agent Loop |
+| 当前阶段 | 阶段 7：上下文预算与压缩（待开始） |
+| 最近完成 | 阶段 6：可用的 CLI 与运行配置 |
 | 当前分支 | `rebuild/minicode-learning` |
-| 最新阶段实现提交 | `c91c47c feat(phase-05): implement bounded agent loop` |
-| 测试状态 | 阶段 5 测试 `17 passed`；全量回归 `167 passed, 2 skipped` |
-| 下一步 | 分析阶段 6 的 CLI 交互、Headless 调用、配置装配和运行过程展示 |
+| 最新阶段实现提交 | `7f3e86e feat(phase-06): add usable CLI runtime` |
+| 测试状态 | 阶段 6 相关测试 `46 passed`；全量回归 `184 passed, 2 skipped` |
+| 下一步 | 分析阶段 7 的上下文预算、工具结果裁剪、摘要与失败降级 |
 
 ## 总体架构
 
@@ -36,7 +36,7 @@ flowchart LR
 | 3 | 只读工作区工具 | 已完成 | 读取、列举、搜索和路径保护 | `8764e55` |
 | 4 | 写入、编辑和命令执行工具 | 已完成 | 安全写入、编辑、命令与权限决策 | `0ad29a4` |
 | 5 | 最小 Agent Loop | 已完成 | 有界模型/工具执行循环 | `c91c47c` |
-| 6 | 可用的 CLI 与运行配置 | 待开始 | 交互模式、Headless 模式和运行配置 | - |
+| 6 | 可用的 CLI 与运行配置 | 已完成 | 交互模式、Headless 模式和运行配置 | `7f3e86e` |
 | 7 | 上下文预算与压缩 | 待开始 | 预算、裁剪、摘要和降级策略 | - |
 | 8 | 会话、Checkpoint 与 Rewind | 待开始 | 会话持久化、检查点和恢复 | - |
 | 9 | Skills、Hooks 与扩展机制 | 待开始 | 按需技能和生命周期扩展点 | - |
@@ -1155,3 +1155,159 @@ passed
 ### 14. 下一阶段
 
 阶段 6 将把模型配置、默认工具注册表、权限提示和 `run_agent_turn()` 接入 CLI，提供可测试的单次 Headless 调用和基础交互模式，同时保持缺少密钥、模型错误与用户退出时的友好错误边界。
+
+## 阶段 6：可用的 CLI 与运行配置
+
+### 1. 阶段目标
+
+- 将真实 OpenAI-compatible 适配器、MockModel 演示、默认工具和权限管理装配到命令行入口。
+- 提供单次 Headless 调用和可连续输入的基础交互模式。
+- 在终端展示工具执行结果、明确停止原因和累计会话统计。
+- 对缺少配置、模型错误、EOF 与 Ctrl-C 提供无堆栈的安全退出。
+
+### 2. 本阶段非目标
+
+- 不实现全屏 TUI、流式 token 渲染或异步工具并发。
+- 不实现上下文压缩、会话落盘、Checkpoint 或 Rewind。
+- 不自动读取 `.env`，不把 API Key 写入文件或终端输出。
+- Headless 模式不默认批准写文件或运行命令。
+
+### 3. 参考资料与源码分析
+
+| 参考项 | 路径或提交 | 学到的内容 | 本项目的取舍 |
+|---|---|---|---|
+| MiniCode 早期 CLI | `D:\code\MiniCode-Python\minicode\main.py` at `4e5253b` | 入口层负责装配模型、工具、权限与循环，并区分 TTY 和管道输入 | 保留入口装配思想，使用当前项目的强类型接口重新实现，不复制复杂 TUI、会话和管理命令 |
+| MiniCode Headless | `D:\code\MiniCode-Python\minicode\headless.py` | 单次模式需要清晰处理空输入、配置失败和非交互权限 | 合并为同一命令的 positional prompt/管道输入，危险操作继续默认拒绝 |
+| 安全退出提交 | `b013b8d` | `KeyboardInterrupt` 应由 CLI 边界友好处理，资源清理放在确定的退出路径 | 当前工具无持久连接，仅捕获控制流并返回稳定退出码，不提前引入资源生命周期框架 |
+
+### 4. 设计方案（实现前）
+
+- `config.py` 增加不含密钥的 CLI 运行设置，统一校验最大步数和系统提示环境变量。
+- `agent.py` 增加可选工具结果观察器，让 CLI 在不侵入工具实现的情况下实时展示执行进度。
+- 新建终端运行层，负责默认工具注册、权限询问、历史延续、统计累加和两种运行模式。
+- `cli.py` 只解析参数、选择 Mock/真实模型、转换友好错误与退出码。
+- `--demo` 必须通过真实 `MockModel -> Agent Loop -> ToolRegistry -> 工具结果回填` 路径完成一次可复现演示。
+
+### 5. 验收测试计划
+
+- Headless MockModel 演示应实际执行工具、输出最终文本与统计。
+- 交互模式应保留上一轮消息，支持 `/stats`、`/help`、`/exit` 与 EOF。
+- 权限提示应支持一次允许、会话允许和拒绝；Headless 默认拒绝变更，仅显式参数允许。
+- 缺少 API Key、非法最大步数和模型失败应返回非零退出码及清晰提示，不打印 traceback。
+- Ctrl-C 应转换为安全退出码 `130`。
+
+### 6. 实现内容与关键调用链
+
+| 文件 | 新增或修改 | 作用 |
+|---|---|---|
+| `src/minicode_rebuild/cli.py` | 修改 | 参数解析、模式选择、依赖装配、友好错误和退出码 |
+| `src/minicode_rebuild/cli_runtime.py` | 新增 | 默认工具注册、权限提示、会话历史、工具展示和统计 |
+| `src/minicode_rebuild/config.py` | 修改 | 加载并校验 `MINICODE_MAX_STEPS` 与系统提示 |
+| `src/minicode_rebuild/agent.py` | 修改 | 增加可选工具观察器，不改变核心工具回填协议 |
+| `tests/test_cli.py` | 修改 | 覆盖用户入口、演示、真实配置、权限与退出行为 |
+| `tests/test_cli_runtime.py` | 新增 | 覆盖统计累加和权限输入解析 |
+
+```mermaid
+flowchart TD
+    Input["参数、管道或交互输入"] --> CLI["cli.main"]
+    CLI --> Config["RuntimeSettings + ModelSettings"]
+    CLI --> Session["AgentSession"]
+    Session --> Loop["run_agent_turn"]
+    Loop --> Model["MockModel 或真实适配器"]
+    Model --> Tools["ToolRegistry"]
+    Tools --> Permission["PermissionManager"]
+    Tools --> Observer["工具状态展示"]
+    Loop --> Result["最终文本或明确停止原因"]
+    Result --> Stats["进程内会话统计"]
+```
+
+`AgentSession` 在每轮调用时把上一轮的非系统消息作为历史传回 Agent Loop，系统提示仍由运行设置统一注入。返回后它累加轮数、模型步数、工具调用数和输入/输出 token；不会在磁盘写入会话数据。
+
+工具观察器只接收已经完成的 `ToolCall` 与 `ToolResult`，因此 CLI 可以展示 `ok` 或稳定错误码，同时工具结果仍由 Agent Loop 按原协议完整回填给模型。
+
+### 7. 两种运行模式与安全边界
+
+- positional prompt 或 `--headless` 执行单次任务；后者也可从标准输入读取。
+- `--interactive` 连续读取输入，支持 `/help`、`/stats`、`/exit`，并在轮次间保留内存历史。
+- `--demo` 使用确定脚本的 MockModel，真实经过一次 `list_files` 工具调用，不需要 API Key。
+- 交互模式的变更请求明确展示风险、摘要和详情，支持一次允许、会话允许或拒绝。
+- Headless 默认没有权限提示器，因此写入和命令调用安全失败；`--allow-mutations` 是本进程逐项一次允许的显式危险开关，并输出警告。
+- 缺少密钥、非法环境配置或非法工作区返回退出码 `2`；模型未完成返回 `1`；Ctrl-C 返回 `130`；正常完成和用户退出返回 `0`。
+
+### 8. 测试与验证
+
+测试先行红灯：新增测试第一次收集时得到 `ModuleNotFoundError: minicode_rebuild.cli_runtime`，并因 `RuntimeSettings` 尚不存在得到 `ImportError`。
+
+实现后的真实验证：
+
+```text
+python -m pytest tests/test_cli.py tests/test_cli_runtime.py tests/test_config.py tests/test_agent_loop.py -q
+46 passed in 1.40s
+
+python -m pytest -q -rs
+184 passed, 2 skipped in 2.12s
+
+python -m compileall -q src
+passed
+
+git diff --check
+passed
+```
+
+两个跳过项是 Windows 环境没有创建符号链接所需权限，和此前阶段一致，不是 CLI 回归失败。
+
+MockModel 端到端演示的真实输出：
+
+```text
+[tool] list_files -> ok
+Mock demo complete: inspected the workspace.
+[stats] turns=1 steps=2 tools=1 tokens=0 (input=0 output=0)
+```
+
+### 9. 遇到的问题、风险与限制
+
+| 问题 | 根因 | 解决方案 | 后续边界 |
+|---|---|---|---|
+| CLI 需要展示工具过程，但循环原先只返回最终历史 | 返回后扫描无法形成运行中反馈 | 增加可选只读观察器，在工具完成后同步通知 | 阶段 10 可在此基础上扩展结构化事件 |
+| 非交互环境无法询问权限 | 标准输入可能是任务管道或不存在 | Headless 默认拒绝；仅显式开关允许本次操作 | 不把危险开关保存到配置文件 |
+| 交互历史持续增长 | 阶段 6 只负责可用入口 | 当前保留完整进程内历史 | 阶段 7 引入预算与压缩 |
+
+当前仍是同步、非流式 CLI；模型或工具执行期间不会显示 token 流。会话和统计在进程结束后丢失，持久化属于阶段 8。真实模型验收依赖用户提供有效 API Key，本阶段通过现有假传输测试验证适配协议，并通过依赖注入验证真实配置装配路径，没有发起计费网络请求。
+
+### 10. 与参考项目的差异
+
+参考 MiniCode 入口已包含全屏 TUI、管理命令、历史文件、会话恢复、Skills 和 MCP。本项目只保留阶段 6 所需的入口装配与安全退出，并将 Headless 和交互模式放在同一可测试命令下。这样入口层尚未依赖后续阶段的数据结构，测试也无需真实终端或网络。
+
+### 11. 本阶段知识点与自测问题
+
+- CLI 是核心能力的装配层，不应重新实现模型、工具或权限业务逻辑。
+- Headless 自动化没有人能即时确认，默认拒绝变更比默认批准更安全。
+- 进度观察器应是可选依赖，避免库调用者被迫产生终端输出。
+- 退出码让脚本区分正常完成、配置错误、运行错误与人工中断。
+
+1. 为什么 `--allow-mutations` 只在当前 Headless 进程逐项授权？
+2. 为什么系统提示不直接加入并永久保存到 `AgentSession.history`？
+3. 为什么模型返回 `model_error` 时 CLI 返回 `1` 而不是打印 traceback？
+
+### 12. 阶段验收
+
+- [x] MockModel 通过真实 Agent Loop 和工具注册表完成可复现演示。
+- [x] 配置有效时 CLI 可装配 OpenAI-compatible 真实适配器。
+- [x] 缺少配置和非法配置显示清晰提示，不泄漏密钥或异常堆栈。
+- [x] 提供单次 Headless 和基础交互模式。
+- [x] 工具调用成功或失败状态会展示给用户。
+- [x] 变更操作遵守交互确认和 Headless 默认拒绝边界。
+- [x] EOF、`/exit` 和 Ctrl-C 可以安全退出。
+- [x] 会话统计覆盖轮数、模型步数、工具次数和 token 用量。
+- [x] 阶段测试、全量回归、编译与 diff 检查通过。
+
+### 13. Git 记录
+
+- 分支：`rebuild/minicode-learning`
+- 实现提交：`7f3e86e`
+- 提交信息：`feat(phase-06): add usable CLI runtime`
+- 远程状态：实现提交已推送至 `origin/rebuild/minicode-learning`，现有 PR #2 将自动包含阶段 6。
+
+### 14. 下一阶段
+
+阶段 7 将为增长中的交互历史建立 token 或字符预算，优先控制工具结果膨胀，并加入保留关键近期消息的结构化摘要、手动/自动压缩和失败降级策略。
