@@ -177,6 +177,27 @@ def test_multiple_tool_calls_execute_in_model_order(tmp_path: Path) -> None:
     ]
 
 
+def test_tool_observer_receives_each_call_and_result(tmp_path: Path) -> None:
+    call = ToolCall(id="call-1", name="echo", arguments={"text": "hello"})
+    model = MockModel(
+        [ModelResponse(tool_calls=(call,)), ModelResponse(content="Done")]
+    )
+    seen = []
+
+    result = run_agent_turn(
+        model=model,
+        tools=ToolRegistry([echo_tool()]),
+        context=ToolContext(tmp_path),
+        user_message="Help me",
+        tool_observer=lambda observed_call, observed_result: seen.append(
+            (observed_call, observed_result)
+        ),
+    )
+
+    assert result.completed is True
+    assert seen == [(call, ToolResult.success("hello"))]
+
+
 def test_empty_response_stops_explicitly(tmp_path: Path) -> None:
     result = run(tmp_path, MockModel([ModelResponse(content="  ")]))
 

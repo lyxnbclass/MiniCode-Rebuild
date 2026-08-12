@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -14,10 +14,12 @@ from minicode_rebuild.core import (
     ModelRequest,
     ModelResponse,
     TokenUsage,
+    ToolCall,
 )
 from minicode_rebuild.tooling import ToolContext, ToolRegistry, ToolResult
 
 DEFAULT_MAX_STEPS = 12
+ToolObserver = Callable[["ToolCall", ToolResult], None]
 
 
 class AgentStopReason(str, Enum):
@@ -131,6 +133,7 @@ def run_agent_turn(
     history: Iterable[Message] = (),
     system_prompt: str = "",
     max_steps: int = DEFAULT_MAX_STEPS,
+    tool_observer: ToolObserver | None = None,
 ) -> AgentResult:
     """Run one bounded turn until final text or an explicit stop condition."""
 
@@ -202,6 +205,8 @@ def run_agent_turn(
         for call in response.tool_calls:
             tool_result = tools.execute(call.name, call.arguments, context)
             tool_call_count += 1
+            if tool_observer is not None:
+                tool_observer(call, tool_result)
             messages.append(
                 Message(
                     role=MessageRole.TOOL,
@@ -224,5 +229,6 @@ __all__ = [
     "AgentResult",
     "AgentStopReason",
     "DEFAULT_MAX_STEPS",
+    "ToolObserver",
     "run_agent_turn",
 ]

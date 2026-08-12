@@ -10,6 +10,11 @@ from urllib.parse import urlsplit
 DEFAULT_MODEL = "deepseek-v4-pro"
 DEFAULT_OPENAI_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL_TIMEOUT_SECONDS = 120
+DEFAULT_MAX_STEPS = 12
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a careful local coding assistant. Inspect the workspace with tools "
+    "before making claims, and ask for permission before mutations."
+)
 
 
 class ModelConfigurationError(ValueError):
@@ -84,3 +89,42 @@ class ModelSettings:
         if self.base_url.endswith("/chat/completions"):
             return self.base_url
         return f"{self.base_url}/chat/completions"
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSettings:
+    """Validated settings owned by the CLI and agent runtime."""
+
+    max_steps: int = DEFAULT_MAX_STEPS
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
+
+    def __post_init__(self) -> None:
+        if isinstance(self.max_steps, bool) or not isinstance(self.max_steps, int):
+            raise ModelConfigurationError("MINICODE_MAX_STEPS must be an integer")
+        if self.max_steps < 1:
+            raise ModelConfigurationError(
+                "MINICODE_MAX_STEPS must be greater than zero"
+            )
+        if not isinstance(self.system_prompt, str):
+            raise ModelConfigurationError("MINICODE_SYSTEM_PROMPT must be text")
+        object.__setattr__(self, "system_prompt", self.system_prompt.strip())
+
+    @classmethod
+    def from_env(
+        cls,
+        environment: Mapping[str, str] | None = None,
+    ) -> RuntimeSettings:
+        """Load CLI runtime controls without requiring a model API key."""
+
+        env = os.environ if environment is None else environment
+        raw_steps = env.get("MINICODE_MAX_STEPS", str(DEFAULT_MAX_STEPS)).strip()
+        try:
+            max_steps = int(raw_steps)
+        except ValueError as error:
+            raise ModelConfigurationError(
+                "MINICODE_MAX_STEPS must be an integer"
+            ) from error
+        return cls(
+            max_steps=max_steps,
+            system_prompt=env.get("MINICODE_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT),
+        )

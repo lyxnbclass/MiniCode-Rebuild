@@ -9,6 +9,7 @@ from minicode_rebuild.config import (
     DEFAULT_OPENAI_BASE_URL,
     ModelConfigurationError,
     ModelSettings,
+    RuntimeSettings,
 )
 
 
@@ -81,3 +82,21 @@ def test_settings_repr_does_not_expose_api_key() -> None:
     settings = ModelSettings.from_env({"OPENAI_API_KEY": "top-secret-value"})
 
     assert "top-secret-value" not in repr(settings)
+
+
+def test_runtime_settings_load_cli_environment() -> None:
+    settings = RuntimeSettings.from_env(
+        {
+            "MINICODE_MAX_STEPS": "7",
+            "MINICODE_SYSTEM_PROMPT": "  Be careful  ",
+        }
+    )
+
+    assert settings.max_steps == 7
+    assert settings.system_prompt == "Be careful"
+
+
+@pytest.mark.parametrize("value", ["zero", "0", "-1"])
+def test_runtime_settings_reject_invalid_max_steps(value: str) -> None:
+    with pytest.raises(ModelConfigurationError, match="MINICODE_MAX_STEPS"):
+        RuntimeSettings.from_env({"MINICODE_MAX_STEPS": value})
