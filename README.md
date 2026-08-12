@@ -4,7 +4,7 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 
 ## 当前状态
 
-阶段 0“仓库初始化与工程基线”至阶段 6“可用的 CLI 与运行配置”已经完成。
+阶段 0“仓库初始化与工程基线”至阶段 7“上下文预算与压缩”已经完成。
 
 目前已经具备：
 
@@ -27,9 +27,12 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 - 使用交互式 CLI 连续对话，或通过 Headless 模式执行单次任务；
 - 在终端查看工具调用状态、停止结果和基础会话统计；
 - 通过友好配置错误、安全权限提示和 Ctrl-C/EOF 处理退出；
+- 估算中英文与工具协议的上下文 token，按阈值自动压缩旧轮次；
+- 定向裁剪超长工具结果，保留头尾证据和结构化元数据；
+- 使用 `/compact` 手动压缩，并在摘要器失败时回退到本地摘要；
 - 执行自动化测试。
 
-真实模型适配器、工具注册表、安全工作区工具和最小 Agent Loop 已经接入 CLI。阶段 7 将继续加入上下文预算和压缩。
+真实模型适配器、工具注册表、安全工作区工具、Agent Loop 和上下文管理已经接入 CLI。阶段 8 将继续加入会话持久化、Checkpoint 与 Rewind。
 
 ## 环境要求
 
@@ -87,6 +90,11 @@ python -m minicode_rebuild --help
 | `MINICODE_MODEL_TIMEOUT` | `120` | 请求超时秒数，必须是正整数 |
 | `MINICODE_MAX_STEPS` | `12` | 每轮最大模型调用步数，必须是正整数 |
 | `MINICODE_SYSTEM_PROMPT` | 内置安全提示 | 覆盖本进程使用的系统提示 |
+| `MINICODE_CONTEXT_TOKENS` | `16000` | 单轮输入的启发式上下文预算 |
+| `MINICODE_CONTEXT_TRIGGER` | `0.8` | 达到预算比例后自动压缩，范围 `(0, 1]` |
+| `MINICODE_KEEP_RECENT_TURNS` | `4` | 压缩时保留的最近完整轮次数 |
+| `MINICODE_TOOL_RESULT_TOKENS` | `1500` | 单条历史工具结果的估算 token 上限 |
+| `MINICODE_SUMMARY_TOKENS` | `1200` | 结构化摘要的估算 token 上限 |
 | `DEEPSEEK_API_KEY` | 无 | DeepSeek API Key |
 | `OPENAI_API_KEY` | 无 | 通用 OpenAI-compatible API Key，优先级高于 `DEEPSEEK_API_KEY` |
 
@@ -119,9 +127,9 @@ minicode-rebuild "分析当前项目结构"
 minicode-rebuild --interactive
 ```
 
-交互模式提供 `/help`、`/stats` 和 `/exit`。写文件和运行命令会显示风险与操作详情，并要求选择一次允许、会话允许或拒绝。Headless 模式默认拒绝所有变更；只有明确传入 `--allow-mutations` 才会在本次运行内逐项自动批准，并在标准错误输出警告。
+交互模式提供 `/help`、`/stats`、`/compact` 和 `/exit`。写文件和运行命令会显示风险与操作详情，并要求选择一次允许、会话允许或拒绝。Headless 模式默认拒绝所有变更；只有明确传入 `--allow-mutations` 才会在本次运行内逐项自动批准，并在标准错误输出警告。
 
-每轮会输出模型步数、工具次数和模型返回的 token 用量。当前统计仅存在于进程内；上下文压缩和会话持久化分别属于阶段 7、8。
+每轮会输出模型步数、工具次数、模型返回的 token 用量和压缩次数。上下文估算是跨 Provider 的保守启发式，不等同于服务端精确 tokenizer；工具结果会优先裁剪，旧轮次按用户输入边界摘要，并始终保留最近完整轮次和主系统提示。当前历史与统计仍只存在于进程内，会话持久化属于阶段 8。
 
 最小的库调用边界如下：
 

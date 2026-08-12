@@ -8,12 +8,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前阶段 | 阶段 7：上下文预算与压缩（待开始） |
-| 最近完成 | 阶段 6：可用的 CLI 与运行配置 |
+| 当前阶段 | 阶段 8：会话、Checkpoint 与 Rewind（待开始） |
+| 最近完成 | 阶段 7：上下文预算与压缩 |
 | 当前分支 | `rebuild/minicode-learning` |
-| 最新阶段实现提交 | `7f3e86e feat(phase-06): add usable CLI runtime` |
-| 测试状态 | 阶段 6 相关测试 `46 passed`；全量回归 `184 passed, 2 skipped` |
-| 下一步 | 分析阶段 7 的上下文预算、工具结果裁剪、摘要与失败降级 |
+| 最新阶段实现提交 | `2bf4bfa feat(phase-07): add context compaction` |
+| 测试状态 | 阶段 7 相关测试 `66 passed`；全量回归 `204 passed, 2 skipped` |
+| 下一步 | 分析阶段 8 的会话持久化、Checkpoint、预览与恢复边界 |
 
 ## 总体架构
 
@@ -37,7 +37,7 @@ flowchart LR
 | 4 | 写入、编辑和命令执行工具 | 已完成 | 安全写入、编辑、命令与权限决策 | `0ad29a4` |
 | 5 | 最小 Agent Loop | 已完成 | 有界模型/工具执行循环 | `c91c47c` |
 | 6 | 可用的 CLI 与运行配置 | 已完成 | 交互模式、Headless 模式和运行配置 | `7f3e86e` |
-| 7 | 上下文预算与压缩 | 待开始 | 预算、裁剪、摘要和降级策略 | - |
+| 7 | 上下文预算与压缩 | 已完成 | 预算、裁剪、摘要和降级策略 | `2bf4bfa` |
 | 8 | 会话、Checkpoint 与 Rewind | 待开始 | 会话持久化、检查点和恢复 | - |
 | 9 | Skills、Hooks 与扩展机制 | 待开始 | 按需技能和生命周期扩展点 | - |
 | 10 | 可观测性、质量与发布准备 | 待开始 | 日志、质量门禁、安装与发布验证 | - |
@@ -1311,3 +1311,168 @@ Mock demo complete: inspected the workspace.
 ### 14. 下一阶段
 
 阶段 7 将为增长中的交互历史建立 token 或字符预算，优先控制工具结果膨胀，并加入保留关键近期消息的结构化摘要、手动/自动压缩和失败降级策略。
+
+## 阶段 7：上下文预算与压缩
+
+### 1. 阶段目标
+
+- 使用确定、可解释的启发式方法估算消息 token 预算。
+- 对历史和当前轮的超长工具结果做协议安全的定向裁剪。
+- 压缩旧轮次时保留最近完整轮次以及 assistant/tool 调用配对。
+- 把被移除历史转换为包含用户意图、结论与工具活动的结构化摘要。
+- 为交互 CLI 提供 `/compact` 手动压缩，并在阈值到达时自动压缩。
+- 自定义摘要器失败时回退到本地确定性摘要，不丢失最近消息。
+
+### 2. 本阶段非目标
+
+- 不实现长期记忆、向量检索或跨进程会话恢复。
+- 不声称启发式估算等于 Provider 的精确 tokenizer 结果。
+- 不调用额外付费模型生成摘要；默认摘要完全在本地生成。
+- 不实现模型上下文窗口自动探测或多模型动态预算。
+
+### 3. 参考资料与源码分析
+
+| 参考项 | 路径或提交 | 学到的内容 | 本项目的取舍 |
+|---|---|---|---|
+| MiniCode 上下文管理 | `D:\code\MiniCode-Python\minicode\context_manager.py` | 中英文估算需不同权重；压缩应按阈值触发并保留近期消息 | 实现更小的不可变策略和结果类型，不复制模型窗口表、缓存与持久化历史 |
+| MiniCode 压缩器 | `D:\code\MiniCode-Python\minicode\context_compactor.py` | 摘要必须保留用户意图、关键决定、路径/工具结果，失败需要降级 | 使用本地结构化摘要为默认和降级路径，不在阶段 7 增加摘要模型调用 |
+| 当前阶段 5/6 数据流 | `agent.py`、`cli_runtime.py` | 压缩必须作用于每次模型请求，而不仅是下一轮开始前 | 增加通用消息准备钩子；CLI 会话负责手动命令和压缩统计展示 |
+
+### 4. 实现前设计
+
+- 新建 `context.py`，提供 `ContextPolicy`、`ContextManager`、`CompactionResult` 和可测试的估算函数。
+- 预算以 token 启发式统一表示；CJK 字符按更高权重估算，并计入角色、工具调用参数等协议开销。
+- 工具消息优先解析 Agent Loop 的 JSON 结果，只裁剪 `output` 字段并保留 `ok`、`error_code`、`tool_call_id` 和截断元数据。
+- 历史按用户消息划分完整轮次，摘要旧轮次，保留最近轮次，避免孤立的 tool message。
+- 摘要作为带明确前缀的 system 历史消息注入；主系统提示仍由每轮单独添加。
+- Agent Loop 接受可选消息准备器，使同一轮新产生的工具结果在下一次模型请求前也受预算保护。
+- `AgentSession` 自动压缩每个请求和轮次结果；`/compact` 强制压缩已有历史并报告前后预算。
+
+### 5. 验收测试计划
+
+- 英文、CJK、工具调用和工具结果的估算均为确定正整数。
+- 工具结果裁剪后 JSON 仍有效、关联 ID 不变，并保留头尾证据。
+- 压缩保留最近完整轮次并生成分区结构化摘要。
+- 自动压缩只在阈值达到后触发；手动压缩可以在阈值前执行。
+- 摘要器异常或空结果时使用本地降级摘要并暴露降级状态。
+- Agent 当前轮工具结果在再次请求模型前已裁剪；CLI `/compact` 可见且不破坏后续对话。
+
+### 6. 实现内容与关键数据流
+
+| 文件 | 新增或修改 | 作用 |
+|---|---|---|
+| `src/minicode_rebuild/context.py` | 新增 | token 估算、策略校验、工具裁剪、摘要和压缩结果 |
+| `src/minicode_rebuild/agent.py` | 修改 | 在每次模型请求前调用可选消息准备器 |
+| `src/minicode_rebuild/cli_runtime.py` | 修改 | 自动/手动压缩、历史替换和压缩统计 |
+| `src/minicode_rebuild/config.py` | 修改 | 从环境变量加载上下文策略 |
+| `src/minicode_rebuild/cli.py` | 修改 | 增加 `/compact` 并展示压缩结果 |
+| `tests/test_context.py` | 新增 | 覆盖预算、配对、摘要、降级、中文裁剪和系统提示保护 |
+
+```mermaid
+flowchart TD
+    History["系统提示 + 历史 + 当前消息"] --> Estimate["启发式 token 估算"]
+    Estimate --> Trim["优先裁剪超长工具 output"]
+    Trim --> Threshold{"达到自动阈值或手动强制?"}
+    Threshold -- "否" --> Request["发送给模型"]
+    Threshold -- "是" --> Split["按用户消息划分完整轮次"]
+    Split --> Protect["保护主系统提示和最近 N 轮"]
+    Split --> Summary["旧轮次结构化摘要"]
+    Summary --> Fallback{"自定义摘要失败?"}
+    Fallback -- "是" --> Local["本地确定性降级摘要"]
+    Fallback -- "否" --> Bound["再次强制摘要预算"]
+    Local --> Bound
+    Protect --> Bound
+    Bound --> Request
+```
+
+### 7. 预算、裁剪与摘要规则
+
+- `estimate_text_tokens()` 对 CJK 字符按约 1.5 字符/token、其他字符按约 4 字符/token 估算。
+- 消息估算额外计算角色、`tool_call_id`、工具名和 JSON 参数的协议开销。
+- 工具裁剪优先解析 Agent Loop 的 JSON 结果，仅替换 `output`；保留 `ok`、`error_code`、原始长度和已有截断状态。
+- 头尾证据使用同一估算器二分确定长度，因此英文和中文都不会超过工具输出预算。
+- 自动阈值为 `max_tokens * trigger_ratio`；未达到阈值仍会独立执行工具结果裁剪。
+- 压缩按用户消息划分轮次，最近 N 个完整轮次不会拆散 assistant 工具调用与对应 tool result。
+- 非摘要主系统提示始终保留；旧摘要参与下一次摘要，防止多次压缩后遗忘更早状态。
+- 本地结构化摘要按“用户请求、助手结论、工具活动”分区，并受独立摘要预算约束。
+
+### 8. 自动、手动与失败降级
+
+`AgentSession` 将 ContextManager 作为每次模型请求前的消息准备器，因此当前轮刚产生的长工具结果也会在下一步模型调用前裁剪。轮次完成后，压缩后的消息成为下一轮历史，并累计 `compactions`。
+
+交互模式的 `/compact` 会在自动阈值前强制压缩已有历史，输出压缩前后估算 token 和移除消息数。历史轮次不足时返回 `not needed`，不会伪造压缩事件。
+
+ContextManager 可注入自定义同步摘要器；若它抛出异常或返回空文本，则记录错误并使用本地摘要。即使自定义摘要器忽略预算返回超长内容，最后仍会通过同一 token 估算器做强制头尾限长。
+
+### 9. 测试与验证
+
+测试先行红灯：首次执行阶段 7 测试时，测试收集得到 `ModuleNotFoundError: No module named 'minicode_rebuild.context'`。
+
+实现和复审后的真实验证：
+
+```text
+python -m pytest tests/test_context.py tests/test_agent_loop.py tests/test_cli_runtime.py tests/test_config.py tests/test_cli.py -q
+66 passed in 1.45s
+
+python -m pytest -q
+204 passed, 2 skipped in 1.80s
+
+python -m compileall -q src
+passed
+
+git diff --check
+passed
+```
+
+两个跳过项仍是 Windows 缺少创建符号链接权限，不是阶段 7 回归失败。
+
+### 10. 遇到的问题与解决过程
+
+| 问题 | 根因 | 解决方案 | 防回归测试 |
+|---|---|---|---|
+| 请求准备时发生压缩但统计为零 | 压缩最初只在轮次结束时计数 | 单独累计请求准备阶段压缩次数 | `test_session_automatically_compacts_at_threshold` |
+| 主系统提示可能进入旧历史摘要 | 最初按首个 user 之前全部算可移除前缀 | 区分主系统提示与带固定前缀的历史摘要 | `test_compaction_preserves_primary_system_prompt` |
+| 多次压缩可能丢弃旧摘要 | 旧摘要未作为摘要输入 | 把旧摘要归入被移除历史并设置“Earlier summaries”区 | `test_recompaction_carries_forward_earlier_summary` |
+| 自定义摘要器可能忽略预算 | 扩展返回值不可盲目信任 | 成功结果也执行最终强制限长 | `test_custom_summary_is_bounded_even_when_summarizer_ignores_budget` |
+| 字符限长不能严格限制中文 token | CJK 单字符权重高于英文 | 用 token 估算器二分搜索可保留头尾长度 | `test_cjk_tool_result_trimming_honors_token_budget` |
+
+### 11. 风险、限制与参考差异
+
+- token 数是启发式估算，不是 Provider 官方 tokenizer 的精确值；配置应保留余量。
+- 当前预算只控制传给模型的消息，不包括工具声明 schema 本身。
+- 默认摘要不理解语义等价，只提取可见文本、工具名、调用 ID 和结果证据。
+- 压缩结果只存在内存；阶段 8 才会定义持久化格式和恢复行为。
+- 当前轮次特别大且没有可移除的旧轮次时，只能裁剪工具结果，不能删除用户当前请求或主系统提示。
+
+参考 MiniCode 已包含模型窗口映射、Provider usage 边界、摘要模型、缓存、持久化历史和更多层级。本项目只实现阶段 7 的最小确定性闭环，采用不可变策略/结果对象，并把摘要模型做成可选依赖，避免压缩自身引入网络失败和额外费用。
+
+### 12. 本阶段知识点与自测问题
+
+- 上下文是当前模型请求的短期工作状态，长期记忆是跨压缩或跨会话的可检索知识，两者职责不同。
+- 工具结果常包含完整文件、搜索列表和命令输出，是上下文增长最快的消息类型。
+- 简单删除最老消息会破坏用户意图、决策证据以及工具调用/结果协议配对。
+- 最近完整轮次、主系统提示、用户目标和关键错误是压缩中优先保护的信息。
+
+1. 为什么工具裁剪应只修改 JSON 的 `output` 字段？
+2. 为什么多次压缩必须把旧摘要带入新摘要？
+3. 为什么自动压缩和 `/compact` 必须复用同一个 ContextManager？
+
+### 13. 阶段验收
+
+- [x] 提供确定、CJK-aware 的 token 启发式估算。
+- [x] 超长工具结果保持 JSON 协议与头尾证据，并严格受估算预算限制。
+- [x] 最近完整轮次、主系统提示和工具调用/结果配对不会被拆散。
+- [x] 旧历史被转换为分区结构化摘要，多次压缩继承旧摘要。
+- [x] 自动阈值与手动 `/compact` 均已接入 CLI 会话。
+- [x] 自定义摘要失败、为空或超预算时有确定降级。
+- [x] 当前轮工具结果在下一次模型请求前会被裁剪。
+- [x] 阶段测试、全量回归、编译和 diff 检查通过。
+
+### 14. Git 记录与下一阶段
+
+- 分支：`rebuild/minicode-learning`
+- 实现提交：`2bf4bfa`
+- 提交信息：`feat(phase-07): add context compaction`
+- 远程状态：实现提交已推送至 `origin/rebuild/minicode-learning`，并进入 Draft PR #3。
+
+阶段 8 将把当前内存历史与统计设计为可校验的会话持久化格式，并在文件变更前记录 Checkpoint，提供 transcript、恢复列表、rewind preview 和明确确认后的恢复操作。
