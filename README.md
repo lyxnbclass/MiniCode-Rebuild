@@ -4,7 +4,7 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 
 ## 当前状态
 
-阶段 0“仓库初始化与工程基线”、阶段 1“核心类型与模型适配层”、阶段 2“工具基础设施”、阶段 3“只读工作区工具”和阶段 4“写入、编辑和命令执行工具”已经完成。
+阶段 0“仓库初始化与工程基线”、阶段 1“核心类型与模型适配层”、阶段 2“工具基础设施”、阶段 3“只读工作区工具”、阶段 4“写入、编辑和命令执行工具”和阶段 5“最小 Agent Loop”已经完成。
 
 目前已经具备：
 
@@ -22,9 +22,11 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 - 通过默认拒绝、一次授权和会话精确授权保护文件变更与命令执行；
 - 原子创建或覆盖文件、执行精确编辑和事务式多替换补丁；
 - 以参数数组和 `shell=False` 在工作区内执行有界前台命令；
+- 在有最大步数的 Agent Loop 中调用模型、顺序执行工具并回填结构化结果；
+- 明确区分最终响应、空响应、模型异常和步数上限四种停止原因；
 - 执行自动化测试。
 
-真实模型适配器、工具注册表、只读工具和受权限保护的变更工具目前是可独立使用的库能力，尚未接入 CLI。Agent Loop 也尚未实现，后续会按 [`docs/REBUILD_LOG.md`](docs/REBUILD_LOG.md) 中的路线图逐阶段加入。
+真实模型适配器、工具注册表、安全工作区工具和最小 Agent Loop 目前是可独立使用的库能力，尚未接入 CLI。可用的交互式及 Headless CLI 会在阶段 6 按 [`docs/REBUILD_LOG.md`](docs/REBUILD_LOG.md) 中的路线图加入。
 
 ## 环境要求
 
@@ -189,6 +191,36 @@ print(result.output)
 - `edit_file` 默认要求唯一精确匹配，`patch_file` 的所有替换必须先在内存中成功；
 - `run_command` 只接受单个可执行文件名和独立参数数组，始终使用 `shell=False`；
 - 命令默认超时 30 秒、最大 300 秒，最终输出仍限制为 20,000 字符。
+
+## 最小 Agent Loop
+
+阶段 5 提供 `run_agent_turn()`：它把用户消息和可选历史组装成 `ModelRequest`，向模型声明当前注册工具，执行模型返回的工具调用，再以 `tool_call_id` 关联的 JSON 工具消息继续请求模型。
+
+```python
+from pathlib import Path
+
+from minicode_rebuild.agent import run_agent_turn
+from minicode_rebuild.core import ModelResponse
+from minicode_rebuild.models import MockModel
+from minicode_rebuild.tooling import ToolContext, ToolRegistry
+
+result = run_agent_turn(
+    model=MockModel([ModelResponse(content="Done")]),
+    tools=ToolRegistry(),
+    context=ToolContext(Path.cwd()),
+    user_message="Inspect this project",
+    max_steps=12,
+)
+print(result.stop_reason.value, result.content)
+```
+
+循环边界：
+
+- 默认最多请求模型 12 步，必须显式使用正整数才能调整；
+- 未知工具、非法参数和工具执行失败都会作为结构化工具结果回填，不会直接击穿循环；
+- 普通模型异常转换为 `model_error`，`KeyboardInterrupt` 和 `SystemExit` 保持可传播；
+- 空文本且没有工具调用时以 `empty_response` 停止；持续调用工具时最终以 `max_steps` 停止；
+- 本阶段只提供同步库 API，CLI 接线、流式输出、重试、上下文压缩和会话持久化属于后续阶段。
 
 ## 测试
 

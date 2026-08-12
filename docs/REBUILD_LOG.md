@@ -8,12 +8,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前阶段 | 阶段 5：最小 Agent Loop（待开始） |
-| 最近完成 | 阶段 4：写入、编辑和命令执行工具 |
+| 当前阶段 | 阶段 6：可用的 CLI 与运行配置（待开始） |
+| 最近完成 | 阶段 5：最小 Agent Loop |
 | 当前分支 | `rebuild/minicode-learning` |
-| 最新阶段实现提交 | `0ad29a4 feat(phase-04): add gated mutation tools` |
-| 测试状态 | 阶段 3 测试 `44 passed, 2 skipped`；阶段 4 测试 `54 passed`；全量回归 `150 passed, 2 skipped` |
-| 下一步 | 分析阶段 5 的模型—工具有界循环、停止条件和错误回传参考实现 |
+| 最新阶段实现提交 | `c91c47c feat(phase-05): implement bounded agent loop` |
+| 测试状态 | 阶段 5 测试 `17 passed`；全量回归 `167 passed, 2 skipped` |
+| 下一步 | 分析阶段 6 的 CLI 交互、Headless 调用、配置装配和运行过程展示 |
 
 ## 总体架构
 
@@ -35,7 +35,7 @@ flowchart LR
 | 2 | 工具基础设施 | 已完成 | 工具定义、上下文、结果和注册表 | `a56c195` |
 | 3 | 只读工作区工具 | 已完成 | 读取、列举、搜索和路径保护 | `8764e55` |
 | 4 | 写入、编辑和命令执行工具 | 已完成 | 安全写入、编辑、命令与权限决策 | `0ad29a4` |
-| 5 | 最小 Agent Loop | 待开始 | 有界模型/工具执行循环 | - |
+| 5 | 最小 Agent Loop | 已完成 | 有界模型/工具执行循环 | `c91c47c` |
 | 6 | 可用的 CLI 与运行配置 | 待开始 | 交互模式、Headless 模式和运行配置 | - |
 | 7 | 上下文预算与压缩 | 待开始 | 预算、裁剪、摘要和降级策略 | - |
 | 8 | 会话、Checkpoint 与 Rewind | 待开始 | 会话持久化、检查点和恢复 | - |
@@ -972,3 +972,186 @@ passed
 ### 14. 下一阶段
 
 阶段 5 将实现最小 Agent Loop：把模型请求、工具声明、工具调用执行和结果回传组织成有最大步数与明确停止条件的循环，并为未知工具、失败结果和模型异常建立可测试行为。
+
+## 阶段 5：最小 Agent Loop
+
+### 1. 阶段目标
+
+- 接收一条用户消息，并与可选系统提示和规范化历史共同构建模型请求。
+- 把 `ToolRegistry` 中的模型可见声明传给模型，解析 `ModelResponse.tool_calls` 并顺序执行。
+- 把每个 `ToolResult` 序列化为与 `tool_call_id` 对应的工具消息，再继续调用模型。
+- 在模型返回非空最终文本、空响应、模型异常或达到最大步数时明确停止。
+- 返回完整规范化消息、步数、工具调用次数、累计 token 使用量和停止原因。
+
+### 2. 本阶段非目标
+
+- 不把 Agent Loop 接入命令行；交互模式、Headless 模式和配置装配属于阶段 6。
+- 不实现流式输出、模型重试、退避、自动改模型、并行工具或后台任务。
+- 不实现上下文 token 预算、裁剪或压缩；它们属于阶段 7。
+- 不持久化消息，不建立会话、Checkpoint 或 Rewind；它们属于阶段 8。
+- 不加入 Skills、Hooks、MCP、多 Agent、计划器或复杂状态机。
+
+### 3. 参考资料与源码分析
+
+| 参考项 | 路径或提交 | 学到的内容 | 本项目的取舍 |
+|---|---|---|---|
+| MiniCode 初始循环 | `D:\code\MiniCode-Python\minicode\agent_loop.py`、提交 `4e5253b` | 模型文本和工具调用必须进入同一消息时间线；工具失败应回传给模型而不是立刻终止；最大步数是防无限循环的硬边界 | 只实现同步的 Provider 无关循环，复用本项目 `ModelRequest`、`ModelResponse`、`ToolRegistry` 和 `ToolContext`，不复制字典协议 |
+| MiniCode 运行时加固 | 提交 `445093a` | 普通适配器异常需要隔离，但 `KeyboardInterrupt` 等控制流异常不能被吞掉；新增边界需要独立回归测试 | 捕获普通 `Exception` 并返回 `model_error`，保留 `BaseException` 子类传播；不提前加入 store、流式回调和 MCP |
+| MiniCode 后期循环 | 当前 `agent_loop.py` | 后期实现已经包含并发、上下文管理、控制器、记忆和自愈，说明基础循环稳定后容易承载大量扩展，也更容易失去清晰边界 | 阶段 5 保持单一 `for` 循环和四个停止原因；复杂调度明确延后，避免污染核心闭环 |
+
+### 4. 设计方案
+
+#### 4.1 模块职责
+
+- `minicode_rebuild.agent.AgentStopReason`：声明 `final_response`、`empty_response`、`max_steps` 和 `model_error`。
+- `minicode_rebuild.agent.AgentResult`：保存最终展示文本、规范化历史、步数、工具次数、累计 token 和错误摘要。
+- `run_agent_turn()`：唯一编排入口，负责请求、响应、工具执行和停止，不承担具体模型或工具逻辑。
+- `ModelAdapter`：只负责把 `ModelRequest` 转成 `ModelResponse`。
+- `ToolRegistry`：继续负责未知工具、参数校验、执行异常和输出限制；Agent Loop 不重复这些策略。
+
+#### 4.2 完整数据流
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant A as Agent Loop
+    participant M as ModelAdapter
+    participant R as ToolRegistry
+    participant T as Tool
+
+    U->>A: user_message + history
+    A->>M: ModelRequest(messages, model_tools)
+    alt 模型返回最终文本
+        M-->>A: ModelResponse(content)
+        A-->>U: AgentResult(final_response)
+    else 模型返回工具调用
+        M-->>A: ModelResponse(tool_calls)
+        loop 按模型顺序执行每个调用
+            A->>R: execute(name, arguments, context)
+            R->>T: 已校验的调用
+            T-->>R: ToolResult
+            R-->>A: 有界成功或失败结果
+            A->>A: 追加 tool_call_id 对应的 JSON 工具消息
+        end
+        A->>M: 下一步 ModelRequest(含工具结果)
+    else 模型异常或空响应
+        M--xA: Exception / empty
+        A-->>U: AgentResult(model_error / empty_response)
+    else 达到最大步数
+        A-->>U: AgentResult(max_steps)
+    end
+```
+
+#### 4.3 停止契约
+
+| 停止原因 | 条件 | `completed` | 历史处理 |
+|---|---|---|---|
+| `final_response` | 没有工具调用且文本非空 | `True` | 保留最终 assistant 消息 |
+| `empty_response` | 没有工具调用且文本为空白 | `False` | 保留模型的空 assistant 消息供诊断 |
+| `model_error` | 模型抛出普通异常或返回错误类型 | `False` | 保留发起失败请求前的全部历史 |
+| `max_steps` | 每一步都有工具调用，达到正整数上限 | `False` | 保留最后一批工具结果，不再请求模型 |
+
+默认 `max_steps=12`。一“步”定义为一次模型请求；一次响应可以包含多个工具调用，所以结果同时独立记录 `steps` 和 `tool_calls`。
+
+#### 4.4 工具结果回填
+
+每个工具消息使用稳定 JSON，包含 `ok`、`output`、`error_code`、`truncated` 和 `original_length`。因此未知工具、非法参数、普通工具异常和业务失败都沿用阶段 2 的机器可读错误码，模型能够在下一步修正，而不需要 Agent Loop 知道具体工具实现。
+
+### 5. 实现内容
+
+| 文件 | 新增或修改 | 作用 |
+|---|---|---|
+| `src/minicode_rebuild/agent.py` | 新增 | 实现结果类型、停止原因、消息组装、结果序列化和有界循环 |
+| `tests/test_agent_loop.py` | 新增 | 覆盖完整闭环、错误回填、停止条件、输入校验和控制流异常 |
+| `README.md` | 修改 | 记录阶段 5 使用方式、能力和明确非目标 |
+| `docs/REBUILD_LOG.md` | 修改 | 记录设计、参考、测试、限制和 Git 事实 |
+
+### 6. 关键代码解析
+
+#### 6.1 循环只负责编排
+
+`run_agent_turn()` 每步重新用完整消息快照构建 `ModelRequest`，工具声明来自注册表。它不解析 Provider 私有响应，不自行校验工具 schema，也不直接访问文件或启动进程；已有层继续各自负责边界。
+
+#### 6.2 工具失败属于上下文而非循环异常
+
+`ToolRegistry.execute()` 总是返回规范化 `ToolResult`。Agent Loop 无论成功或失败都生成 `MessageRole.TOOL`，以原调用 ID 关联并交给下一次模型请求。这样模型可以换参数、换工具或在最终答案中解释失败。
+
+#### 6.3 最大步数阻止无限循环
+
+循环使用有限 `range(1, max_steps + 1)`，并拒绝布尔值、零和负数。即使模型永远只发工具调用，执行次数也有确定上限；达到上限后不再额外请求模型，并返回 `max_steps`。
+
+#### 6.4 异常分层
+
+模型适配器的普通异常会转换为稳定 `model_error`，错误类型和消息放进 `AgentResult.error`。`KeyboardInterrupt` 与 `SystemExit` 不属于普通 `Exception`，会继续向调用方传播，确保未来 CLI 可以正确响应 Ctrl-C 和进程退出。
+
+### 7. 测试与验证
+
+测试先行红灯：首次执行 `tests/test_agent_loop.py` 时，因为 `minicode_rebuild.agent` 尚不存在，在测试收集阶段得到 `ModuleNotFoundError`。
+
+实现与安全复审后的真实验证：
+
+```text
+python -m pytest tests/test_agent_loop.py -q
+17 passed in 0.12s
+
+python -m pytest -q
+167 passed, 2 skipped in 1.69s
+
+python -m compileall -q src
+compileall: passed
+
+git diff --check
+passed
+```
+
+两个跳过项仍是阶段 3 的 Windows 符号链接权限环境测试，不是 Agent Loop 回归失败。
+
+### 8. 风险与限制
+
+- 只提供同步调用；慢模型和慢工具会阻塞当前线程。
+- 模型普通异常不会自动重试，调用方可依据 `model_error` 决定是否重试。
+- 一个模型响应中的多个工具调用严格顺序执行；尚未声明只读并发安全语义。
+- 历史在每一步完整传给模型，尚无 token 预算或压缩，长对话需要阶段 7 处理。
+- 工具是否允许执行仍由阶段 4 的 `PermissionManager` 决定；Agent Loop 不绕过也不自动批准。
+- 当前 CLI 仍只支持帮助和版本，阶段 6 才会装配真实模型、工具和权限交互。
+
+### 9. 与参考项目的差异
+
+参考 MiniCode 当前循环已经承担流式输出、并发调度、上下文管理、记忆、任务图、运行时事件和多种控制器。本项目没有复制这些扩展，只提取最早期循环中不可缺少的数据流，并用阶段 1—4 已经建立的强类型契约重新实现。
+
+本项目还返回不可变 `AgentResult` 而不是只返回消息列表，使调用方无需扫描历史即可判断停止原因、完成状态、步数、工具次数和 token 使用量。
+
+### 10. 本阶段知识点
+
+- Agent Loop 的核心不是“不断调用模型”，而是把 assistant 工具调用与对应 tool 结果完整放回消息协议。
+- 工具业务失败应成为模型可见证据，只有编排层自身停止条件才结束循环。
+- 最大模型步数和工具调用次数不是同一个指标；一个模型响应可能并列提出多个调用。
+- 明确停止原因比用空字符串或异常猜测状态更适合 CLI、日志和后续恢复功能。
+
+### 11. 自测问题
+
+1. 为什么未知工具不应该直接终止 Agent Loop？
+2. 为什么达到最大步数后不再额外调用一次模型索要总结？
+3. 为什么 `KeyboardInterrupt` 不应被转换成 `model_error`？
+
+### 12. 阶段验收
+
+- [x] 用户消息、系统提示和历史可以组成稳定模型请求。
+- [x] 注册工具声明会传给模型，工具调用按顺序执行。
+- [x] 成功、未知、参数错误和工具失败结果都关联原 `tool_call_id` 回填。
+- [x] 最终文本、空响应、模型异常和最大步数均有明确停止原因。
+- [x] 最大步数为强制正整数，持续工具调用无法形成无限循环。
+- [x] 模型普通异常被隔离，控制流异常保持传播。
+- [x] 阶段测试、全量回归、编译和 diff 检查通过。
+- [x] README 与学习日志反映真实实现和限制。
+
+### 13. Git 记录
+
+- 分支：`rebuild/minicode-learning`
+- 实现提交：`c91c47c`
+- 提交信息：`feat(phase-05): implement bounded agent loop`
+- 远程状态：实现与文档已推送至 `origin/rebuild/minicode-learning`，并进入草稿 PR #2。
+
+### 14. 下一阶段
+
+阶段 6 将把模型配置、默认工具注册表、权限提示和 `run_agent_turn()` 接入 CLI，提供可测试的单次 Headless 调用和基础交互模式，同时保持缺少密钥、模型错误与用户退出时的友好错误边界。
