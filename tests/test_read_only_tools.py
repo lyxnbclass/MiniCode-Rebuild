@@ -6,6 +6,7 @@ import pytest
 
 from minicode_rebuild.tooling import ToolContext, ToolRegistry, ToolResult
 from minicode_rebuild.tools import READ_ONLY_TOOLS
+from minicode_rebuild.tools import read_only as read_only_module
 
 
 @pytest.fixture
@@ -277,6 +278,33 @@ def test_grep_files_rejects_invalid_regex_and_limits_matches(
     assert limited.ok is True
     assert "MATCHES: 2" in limited.output
     assert "TRUNCATED: yes" in limited.output
+
+
+def test_grep_files_caps_candidates_before_include_filter(
+    tmp_path: Path, registry: ToolRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    yielded = 0
+
+    def candidate_files(_root: Path):
+        nonlocal yielded
+        for index in range(5):
+            yielded += 1
+            yield tmp_path / f"excluded-{index}.txt"
+
+    monkeypatch.setattr(read_only_module, "MAX_GREP_FILES", 3)
+    monkeypatch.setattr(read_only_module, "_iter_search_files", candidate_files)
+
+    result = execute(
+        registry,
+        tmp_path,
+        "grep_files",
+        {"pattern": "needle", "include": "**/*.py"},
+    )
+
+    assert result.ok is True
+    assert yielded == 4
+    assert "FILES_SCANNED: 3" in result.output
+    assert "TRUNCATED: yes" in result.output
 
 
 def test_grep_files_skips_large_and_non_utf8_files(

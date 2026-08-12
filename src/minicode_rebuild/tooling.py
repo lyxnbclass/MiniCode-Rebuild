@@ -7,9 +7,12 @@ from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Self, TypeAlias
+from typing import TYPE_CHECKING, Self, TypeAlias
 
 from minicode_rebuild.core import JsonValue, ModelTool
+
+if TYPE_CHECKING:
+    from minicode_rebuild.permissions import PermissionManager
 
 ToolHandler: TypeAlias = Callable[
     [Mapping[str, JsonValue], "ToolContext"], "ToolResult"
@@ -40,6 +43,7 @@ class ToolContext:
 
     cwd: Path
     state: MutableMapping[str, object] = field(default_factory=dict)
+    permissions: "PermissionManager | None" = None
 
     def __post_init__(self) -> None:
         self.cwd = Path(self.cwd)

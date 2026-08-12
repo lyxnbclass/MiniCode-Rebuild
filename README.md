@@ -4,7 +4,7 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 
 ## 当前状态
 
-阶段 0“仓库初始化与工程基线”、阶段 1“核心类型与模型适配层”、阶段 2“工具基础设施”和阶段 3“只读工作区工具”已经完成。
+阶段 0“仓库初始化与工程基线”、阶段 1“核心类型与模型适配层”、阶段 2“工具基础设施”、阶段 3“只读工作区工具”、阶段 4“写入、编辑和命令执行工具”和阶段 5“最小 Agent Loop”已经完成。
 
 目前已经具备：
 
@@ -19,9 +19,14 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 - 安全解析工作区路径，阻止绝对路径、`..` 和符号链接逃逸；
 - 读取文件、列举目录、按 glob 查找路径和按正则搜索 UTF-8 文本；
 - 限制单次读取窗口、目录/搜索结果、搜索文件大小和最终工具输出；
+- 通过默认拒绝、一次授权和会话精确授权保护文件变更与命令执行；
+- 原子创建或覆盖文件、执行精确编辑和事务式多替换补丁；
+- 以参数数组和 `shell=False` 在工作区内执行有界前台命令；
+- 在有最大步数的 Agent Loop 中调用模型、顺序执行工具并回填结构化结果；
+- 明确区分最终响应、空响应、模型异常和步数上限四种停止原因；
 - 执行自动化测试。
 
-真实模型适配器、工具注册表和只读工作区工具目前是可独立使用的库能力，尚未接入 CLI。写入/命令工具和 Agent Loop 也尚未实现，后续会按 [`docs/REBUILD_LOG.md`](docs/REBUILD_LOG.md) 中的路线图逐阶段加入。
+真实模型适配器、工具注册表、安全工作区工具和最小 Agent Loop 目前是可独立使用的库能力，尚未接入 CLI。可用的交互式及 Headless CLI 会在阶段 6 按 [`docs/REBUILD_LOG.md`](docs/REBUILD_LOG.md) 中的路线图加入。
 
 ## 环境要求
 
@@ -129,7 +134,7 @@ result = registry.execute("echo", {"text": "hello"}, ToolContext(Path.cwd()))
 print(result.output)
 ```
 
-本阶段的 schema 校验器有意只实现已文档化的 JSON Schema 子集；具体写入、编辑和命令执行工具属于后续阶段。
+本阶段的 schema 校验器有意只实现已文档化的 JSON Schema 子集；阶段 4 的写入、编辑和命令执行工具复用同一注册与结果边界。
 
 ## 只读工作区工具
 
@@ -157,6 +162,65 @@ print(result.output)
 - `grep_files` 最多扫描 5,000 个文件，跳过超过 1 MiB、非 UTF-8 或不可读的文件，并把单行预览限制为 500 个字符；
 - 常见缓存、虚拟环境、构建和版本控制目录不会被递归搜索；
 - 每个工具仍受注册表 20,000 字符的最终输出上限保护。
+
+## 写入、编辑和命令执行工具
+
+阶段 4 提供 `write_file`、`edit_file`、`patch_file` 和 `run_command`。它们默认拒绝执行，调用方必须通过 `PermissionManager` 注入明确决策；`allow_once` 只允许当前请求，`allow_session` 只复用完全相同的文件路径或命令签名。
+
+```python
+from pathlib import Path
+
+from minicode_rebuild.permissions import PermissionManager
+from minicode_rebuild.tooling import ToolContext, ToolRegistry
+from minicode_rebuild.tools import MUTATING_TOOLS
+
+permissions = PermissionManager(prompt=lambda request: "allow_once")
+registry = ToolRegistry(MUTATING_TOOLS)
+result = registry.execute(
+    "edit_file",
+    {"path": "demo.py", "old": "value = 1", "new": "value = 2"},
+    ToolContext(Path.cwd(), permissions=permissions),
+)
+print(result.output)
+```
+
+安全边界：
+
+- 所有文件路径和命令工作目录必须位于 `ToolContext.cwd` 内；
+- 文件变更先完整计算新内容并生成有限 diff，授权后通过同目录临时文件和 `os.replace` 原子提交；
+- `edit_file` 默认要求唯一精确匹配，`patch_file` 的所有替换必须先在内存中成功；
+- `run_command` 只接受单个可执行文件名和独立参数数组，始终使用 `shell=False`；
+- 命令默认超时 30 秒、最大 300 秒，最终输出仍限制为 20,000 字符。
+
+## 最小 Agent Loop
+
+阶段 5 提供 `run_agent_turn()`：它把用户消息和可选历史组装成 `ModelRequest`，向模型声明当前注册工具，执行模型返回的工具调用，再以 `tool_call_id` 关联的 JSON 工具消息继续请求模型。
+
+```python
+from pathlib import Path
+
+from minicode_rebuild.agent import run_agent_turn
+from minicode_rebuild.core import ModelResponse
+from minicode_rebuild.models import MockModel
+from minicode_rebuild.tooling import ToolContext, ToolRegistry
+
+result = run_agent_turn(
+    model=MockModel([ModelResponse(content="Done")]),
+    tools=ToolRegistry(),
+    context=ToolContext(Path.cwd()),
+    user_message="Inspect this project",
+    max_steps=12,
+)
+print(result.stop_reason.value, result.content)
+```
+
+循环边界：
+
+- 默认最多请求模型 12 步，必须显式使用正整数才能调整；
+- 未知工具、非法参数和工具执行失败都会作为结构化工具结果回填，不会直接击穿循环；
+- 普通模型异常转换为 `model_error`，`KeyboardInterrupt` 和 `SystemExit` 保持可传播；
+- 空文本且没有工具调用时以 `empty_response` 停止；持续调用工具时最终以 `max_steps` 停止；
+- 本阶段只提供同步库 API，CLI 接线、流式输出、重试、上下文压缩和会话持久化属于后续阶段。
 
 ## 测试
 
