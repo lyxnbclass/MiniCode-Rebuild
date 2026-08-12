@@ -1306,7 +1306,7 @@ Mock demo complete: inspected the workspace.
 - 分支：`rebuild/minicode-learning`
 - 实现提交：`7f3e86e`
 - 提交信息：`feat(phase-06): add usable CLI runtime`
-- 远程状态：实现提交已推送至 `origin/rebuild/minicode-learning`，现有 PR #2 将自动包含阶段 6。
+- 远程状态：实现与文档已推送至 `origin/rebuild/minicode-learning`；由于 PR #2 已先合并，阶段 6 单独进入 Draft PR #3。
 
 ### 14. 下一阶段
 
