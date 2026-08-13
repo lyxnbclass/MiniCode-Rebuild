@@ -69,6 +69,10 @@ def apply_file_change(
 
     assessment = classify_file_risk(target, existed=existed)
     relative = _relative(target, context)
+    if relative.split("/", 1)[0].casefold() == ".minicode-rebuild":
+        return ToolResult.error(
+            "reserved_path", "The .minicode-rebuild runtime directory is managed internally."
+        )
     request = PermissionRequest(
         operation=operation,
         risk=assessment.level,
@@ -81,6 +85,19 @@ def apply_file_change(
         manager.authorize(request)
     except PermissionDeniedError as exc:
         return ToolResult.error(exc.error_code, str(exc))
+
+    checkpoint_id: str | None = None
+    recorder = context.state.get("checkpoint_recorder")
+    discarder = context.state.get("checkpoint_discarder")
+    if recorder is not None:
+        if not callable(recorder):
+            return ToolResult.error("checkpoint_error", "Checkpoint recorder is not callable.")
+        try:
+            checkpoint_id = recorder(target, old_content, next_content, operation)
+            if not isinstance(checkpoint_id, str) or not checkpoint_id:
+                raise ValueError("checkpoint recorder returned an invalid id")
+        except Exception as exc:
+            return ToolResult.error("checkpoint_error", f"Checkpoint could not be saved: {exc}")
 
     temporary_path: Path | None = None
     try:
@@ -98,6 +115,11 @@ def apply_file_change(
         os.replace(temporary_path, target)
         temporary_path = None
     except OSError as exc:
+        if checkpoint_id is not None and callable(discarder):
+            try:
+                discarder(checkpoint_id)
+            except Exception:
+                pass
         return ToolResult.error("write_error", f"The file could not be written: {exc}")
     finally:
         if temporary_path is not None:

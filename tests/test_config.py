@@ -9,6 +9,7 @@ from minicode_rebuild.config import (
     DEFAULT_OPENAI_BASE_URL,
     ModelConfigurationError,
     ModelSettings,
+    RuntimeSettings,
 )
 
 
@@ -81,3 +82,49 @@ def test_settings_repr_does_not_expose_api_key() -> None:
     settings = ModelSettings.from_env({"OPENAI_API_KEY": "top-secret-value"})
 
     assert "top-secret-value" not in repr(settings)
+
+
+def test_runtime_settings_load_cli_environment() -> None:
+    settings = RuntimeSettings.from_env(
+        {
+            "MINICODE_MAX_STEPS": "7",
+            "MINICODE_SYSTEM_PROMPT": "  Be careful  ",
+            "MINICODE_CONTEXT_TOKENS": "9000",
+            "MINICODE_CONTEXT_TRIGGER": "0.75",
+            "MINICODE_KEEP_RECENT_TURNS": "3",
+            "MINICODE_TOOL_RESULT_TOKENS": "700",
+            "MINICODE_SUMMARY_TOKENS": "500",
+        }
+    )
+
+    assert settings.max_steps == 7
+    assert settings.system_prompt == "Be careful"
+    assert settings.context_policy.max_tokens == 9000
+    assert settings.context_policy.trigger_ratio == 0.75
+    assert settings.context_policy.keep_recent_turns == 3
+    assert settings.context_policy.tool_result_tokens == 700
+    assert settings.context_policy.summary_tokens == 500
+
+
+@pytest.mark.parametrize("value", ["zero", "0", "-1"])
+def test_runtime_settings_reject_invalid_max_steps(value: str) -> None:
+    with pytest.raises(ModelConfigurationError, match="MINICODE_MAX_STEPS"):
+        RuntimeSettings.from_env({"MINICODE_MAX_STEPS": value})
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("MINICODE_CONTEXT_TOKENS", "0"),
+        ("MINICODE_CONTEXT_TRIGGER", "1.1"),
+        ("MINICODE_KEEP_RECENT_TURNS", "0"),
+        ("MINICODE_TOOL_RESULT_TOKENS", "bad"),
+        ("MINICODE_SUMMARY_TOKENS", "-1"),
+    ],
+)
+def test_runtime_settings_reject_invalid_context_policy(
+    variable: str,
+    value: str,
+) -> None:
+    with pytest.raises(ModelConfigurationError, match=variable):
+        RuntimeSettings.from_env({variable: value})

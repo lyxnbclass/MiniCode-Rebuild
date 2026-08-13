@@ -8,12 +8,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前阶段 | 阶段 6：可用的 CLI 与运行配置（待开始） |
-| 最近完成 | 阶段 5：最小 Agent Loop |
+| 当前阶段 | 阶段 9：记忆与检索（待开始） |
+| 最近完成 | 阶段 8：会话、Checkpoint 与 Rewind |
 | 当前分支 | `rebuild/minicode-learning` |
-| 最新阶段实现提交 | `c91c47c feat(phase-05): implement bounded agent loop` |
-| 测试状态 | 阶段 5 测试 `17 passed`；全量回归 `167 passed, 2 skipped` |
-| 下一步 | 分析阶段 6 的 CLI 交互、Headless 调用、配置装配和运行过程展示 |
+| 最新阶段实现提交 | `b4afec3 feat(phase-08): add sessions checkpoints and rewind` |
+| 测试状态 | 阶段 8 相关测试 `93 passed, 1 skipped`；全量回归 `224 passed, 2 skipped` |
+| 下一步 | 分析阶段 9 的记忆提取、存储、检索与注入边界 |
 
 ## 总体架构
 
@@ -36,8 +36,8 @@ flowchart LR
 | 3 | 只读工作区工具 | 已完成 | 读取、列举、搜索和路径保护 | `8764e55` |
 | 4 | 写入、编辑和命令执行工具 | 已完成 | 安全写入、编辑、命令与权限决策 | `0ad29a4` |
 | 5 | 最小 Agent Loop | 已完成 | 有界模型/工具执行循环 | `c91c47c` |
-| 6 | 可用的 CLI 与运行配置 | 待开始 | 交互模式、Headless 模式和运行配置 | - |
-| 7 | 上下文预算与压缩 | 待开始 | 预算、裁剪、摘要和降级策略 | - |
+| 6 | 可用的 CLI 与运行配置 | 已完成 | 交互模式、Headless 模式和运行配置 | `7f3e86e` |
+| 7 | 上下文预算与压缩 | 已完成 | 预算、裁剪、摘要和降级策略 | `2bf4bfa` |
 | 8 | 会话、Checkpoint 与 Rewind | 待开始 | 会话持久化、检查点和恢复 | - |
 | 9 | Skills、Hooks 与扩展机制 | 待开始 | 按需技能和生命周期扩展点 | - |
 | 10 | 可观测性、质量与发布准备 | 待开始 | 日志、质量门禁、安装与发布验证 | - |
@@ -1155,3 +1155,432 @@ passed
 ### 14. 下一阶段
 
 阶段 6 将把模型配置、默认工具注册表、权限提示和 `run_agent_turn()` 接入 CLI，提供可测试的单次 Headless 调用和基础交互模式，同时保持缺少密钥、模型错误与用户退出时的友好错误边界。
+
+## 阶段 6：可用的 CLI 与运行配置
+
+### 1. 阶段目标
+
+- 将真实 OpenAI-compatible 适配器、MockModel 演示、默认工具和权限管理装配到命令行入口。
+- 提供单次 Headless 调用和可连续输入的基础交互模式。
+- 在终端展示工具执行结果、明确停止原因和累计会话统计。
+- 对缺少配置、模型错误、EOF 与 Ctrl-C 提供无堆栈的安全退出。
+
+### 2. 本阶段非目标
+
+- 不实现全屏 TUI、流式 token 渲染或异步工具并发。
+- 不实现上下文压缩、会话落盘、Checkpoint 或 Rewind。
+- 不自动读取 `.env`，不把 API Key 写入文件或终端输出。
+- Headless 模式不默认批准写文件或运行命令。
+
+### 3. 参考资料与源码分析
+
+| 参考项 | 路径或提交 | 学到的内容 | 本项目的取舍 |
+|---|---|---|---|
+| MiniCode 早期 CLI | `D:\code\MiniCode-Python\minicode\main.py` at `4e5253b` | 入口层负责装配模型、工具、权限与循环，并区分 TTY 和管道输入 | 保留入口装配思想，使用当前项目的强类型接口重新实现，不复制复杂 TUI、会话和管理命令 |
+| MiniCode Headless | `D:\code\MiniCode-Python\minicode\headless.py` | 单次模式需要清晰处理空输入、配置失败和非交互权限 | 合并为同一命令的 positional prompt/管道输入，危险操作继续默认拒绝 |
+| 安全退出提交 | `b013b8d` | `KeyboardInterrupt` 应由 CLI 边界友好处理，资源清理放在确定的退出路径 | 当前工具无持久连接，仅捕获控制流并返回稳定退出码，不提前引入资源生命周期框架 |
+
+### 4. 设计方案（实现前）
+
+- `config.py` 增加不含密钥的 CLI 运行设置，统一校验最大步数和系统提示环境变量。
+- `agent.py` 增加可选工具结果观察器，让 CLI 在不侵入工具实现的情况下实时展示执行进度。
+- 新建终端运行层，负责默认工具注册、权限询问、历史延续、统计累加和两种运行模式。
+- `cli.py` 只解析参数、选择 Mock/真实模型、转换友好错误与退出码。
+- `--demo` 必须通过真实 `MockModel -> Agent Loop -> ToolRegistry -> 工具结果回填` 路径完成一次可复现演示。
+
+### 5. 验收测试计划
+
+- Headless MockModel 演示应实际执行工具、输出最终文本与统计。
+- 交互模式应保留上一轮消息，支持 `/stats`、`/help`、`/exit` 与 EOF。
+- 权限提示应支持一次允许、会话允许和拒绝；Headless 默认拒绝变更，仅显式参数允许。
+- 缺少 API Key、非法最大步数和模型失败应返回非零退出码及清晰提示，不打印 traceback。
+- Ctrl-C 应转换为安全退出码 `130`。
+
+### 6. 实现内容与关键调用链
+
+| 文件 | 新增或修改 | 作用 |
+|---|---|---|
+| `src/minicode_rebuild/cli.py` | 修改 | 参数解析、模式选择、依赖装配、友好错误和退出码 |
+| `src/minicode_rebuild/cli_runtime.py` | 新增 | 默认工具注册、权限提示、会话历史、工具展示和统计 |
+| `src/minicode_rebuild/config.py` | 修改 | 加载并校验 `MINICODE_MAX_STEPS` 与系统提示 |
+| `src/minicode_rebuild/agent.py` | 修改 | 增加可选工具观察器，不改变核心工具回填协议 |
+| `tests/test_cli.py` | 修改 | 覆盖用户入口、演示、真实配置、权限与退出行为 |
+| `tests/test_cli_runtime.py` | 新增 | 覆盖统计累加和权限输入解析 |
+
+```mermaid
+flowchart TD
+    Input["参数、管道或交互输入"] --> CLI["cli.main"]
+    CLI --> Config["RuntimeSettings + ModelSettings"]
+    CLI --> Session["AgentSession"]
+    Session --> Loop["run_agent_turn"]
+    Loop --> Model["MockModel 或真实适配器"]
+    Model --> Tools["ToolRegistry"]
+    Tools --> Permission["PermissionManager"]
+    Tools --> Observer["工具状态展示"]
+    Loop --> Result["最终文本或明确停止原因"]
+    Result --> Stats["进程内会话统计"]
+```
+
+`AgentSession` 在每轮调用时把上一轮的非系统消息作为历史传回 Agent Loop，系统提示仍由运行设置统一注入。返回后它累加轮数、模型步数、工具调用数和输入/输出 token；不会在磁盘写入会话数据。
+
+工具观察器只接收已经完成的 `ToolCall` 与 `ToolResult`，因此 CLI 可以展示 `ok` 或稳定错误码，同时工具结果仍由 Agent Loop 按原协议完整回填给模型。
+
+### 7. 两种运行模式与安全边界
+
+- positional prompt 或 `--headless` 执行单次任务；后者也可从标准输入读取。
+- `--interactive` 连续读取输入，支持 `/help`、`/stats`、`/exit`，并在轮次间保留内存历史。
+- `--demo` 使用确定脚本的 MockModel，真实经过一次 `list_files` 工具调用，不需要 API Key。
+- 交互模式的变更请求明确展示风险、摘要和详情，支持一次允许、会话允许或拒绝。
+- Headless 默认没有权限提示器，因此写入和命令调用安全失败；`--allow-mutations` 是本进程逐项一次允许的显式危险开关，并输出警告。
+- 缺少密钥、非法环境配置或非法工作区返回退出码 `2`；模型未完成返回 `1`；Ctrl-C 返回 `130`；正常完成和用户退出返回 `0`。
+
+### 8. 测试与验证
+
+测试先行红灯：新增测试第一次收集时得到 `ModuleNotFoundError: minicode_rebuild.cli_runtime`，并因 `RuntimeSettings` 尚不存在得到 `ImportError`。
+
+实现后的真实验证：
+
+```text
+python -m pytest tests/test_cli.py tests/test_cli_runtime.py tests/test_config.py tests/test_agent_loop.py -q
+46 passed in 1.40s
+
+python -m pytest -q -rs
+184 passed, 2 skipped in 2.12s
+
+python -m compileall -q src
+passed
+
+git diff --check
+passed
+```
+
+两个跳过项是 Windows 环境没有创建符号链接所需权限，和此前阶段一致，不是 CLI 回归失败。
+
+MockModel 端到端演示的真实输出：
+
+```text
+[tool] list_files -> ok
+Mock demo complete: inspected the workspace.
+[stats] turns=1 steps=2 tools=1 tokens=0 (input=0 output=0)
+```
+
+### 9. 遇到的问题、风险与限制
+
+| 问题 | 根因 | 解决方案 | 后续边界 |
+|---|---|---|---|
+| CLI 需要展示工具过程，但循环原先只返回最终历史 | 返回后扫描无法形成运行中反馈 | 增加可选只读观察器，在工具完成后同步通知 | 阶段 10 可在此基础上扩展结构化事件 |
+| 非交互环境无法询问权限 | 标准输入可能是任务管道或不存在 | Headless 默认拒绝；仅显式开关允许本次操作 | 不把危险开关保存到配置文件 |
+| 交互历史持续增长 | 阶段 6 只负责可用入口 | 当前保留完整进程内历史 | 阶段 7 引入预算与压缩 |
+
+当前仍是同步、非流式 CLI；模型或工具执行期间不会显示 token 流。会话和统计在进程结束后丢失，持久化属于阶段 8。真实模型验收依赖用户提供有效 API Key，本阶段通过现有假传输测试验证适配协议，并通过依赖注入验证真实配置装配路径，没有发起计费网络请求。
+
+### 10. 与参考项目的差异
+
+参考 MiniCode 入口已包含全屏 TUI、管理命令、历史文件、会话恢复、Skills 和 MCP。本项目只保留阶段 6 所需的入口装配与安全退出，并将 Headless 和交互模式放在同一可测试命令下。这样入口层尚未依赖后续阶段的数据结构，测试也无需真实终端或网络。
+
+### 11. 本阶段知识点与自测问题
+
+- CLI 是核心能力的装配层，不应重新实现模型、工具或权限业务逻辑。
+- Headless 自动化没有人能即时确认，默认拒绝变更比默认批准更安全。
+- 进度观察器应是可选依赖，避免库调用者被迫产生终端输出。
+- 退出码让脚本区分正常完成、配置错误、运行错误与人工中断。
+
+1. 为什么 `--allow-mutations` 只在当前 Headless 进程逐项授权？
+2. 为什么系统提示不直接加入并永久保存到 `AgentSession.history`？
+3. 为什么模型返回 `model_error` 时 CLI 返回 `1` 而不是打印 traceback？
+
+### 12. 阶段验收
+
+- [x] MockModel 通过真实 Agent Loop 和工具注册表完成可复现演示。
+- [x] 配置有效时 CLI 可装配 OpenAI-compatible 真实适配器。
+- [x] 缺少配置和非法配置显示清晰提示，不泄漏密钥或异常堆栈。
+- [x] 提供单次 Headless 和基础交互模式。
+- [x] 工具调用成功或失败状态会展示给用户。
+- [x] 变更操作遵守交互确认和 Headless 默认拒绝边界。
+- [x] EOF、`/exit` 和 Ctrl-C 可以安全退出。
+- [x] 会话统计覆盖轮数、模型步数、工具次数和 token 用量。
+- [x] 阶段测试、全量回归、编译与 diff 检查通过。
+
+### 13. Git 记录
+
+- 分支：`rebuild/minicode-learning`
+- 实现提交：`7f3e86e`
+- 提交信息：`feat(phase-06): add usable CLI runtime`
+- 远程状态：实现与文档已推送至 `origin/rebuild/minicode-learning`；由于 PR #2 已先合并，阶段 6 单独进入 Draft PR #3。
+
+### 14. 下一阶段
+
+阶段 7 将为增长中的交互历史建立 token 或字符预算，优先控制工具结果膨胀，并加入保留关键近期消息的结构化摘要、手动/自动压缩和失败降级策略。
+
+## 阶段 7：上下文预算与压缩
+
+### 1. 阶段目标
+
+- 使用确定、可解释的启发式方法估算消息 token 预算。
+- 对历史和当前轮的超长工具结果做协议安全的定向裁剪。
+- 压缩旧轮次时保留最近完整轮次以及 assistant/tool 调用配对。
+- 把被移除历史转换为包含用户意图、结论与工具活动的结构化摘要。
+- 为交互 CLI 提供 `/compact` 手动压缩，并在阈值到达时自动压缩。
+- 自定义摘要器失败时回退到本地确定性摘要，不丢失最近消息。
+
+### 2. 本阶段非目标
+
+- 不实现长期记忆、向量检索或跨进程会话恢复。
+- 不声称启发式估算等于 Provider 的精确 tokenizer 结果。
+- 不调用额外付费模型生成摘要；默认摘要完全在本地生成。
+- 不实现模型上下文窗口自动探测或多模型动态预算。
+
+### 3. 参考资料与源码分析
+
+| 参考项 | 路径或提交 | 学到的内容 | 本项目的取舍 |
+|---|---|---|---|
+| MiniCode 上下文管理 | `D:\code\MiniCode-Python\minicode\context_manager.py` | 中英文估算需不同权重；压缩应按阈值触发并保留近期消息 | 实现更小的不可变策略和结果类型，不复制模型窗口表、缓存与持久化历史 |
+| MiniCode 压缩器 | `D:\code\MiniCode-Python\minicode\context_compactor.py` | 摘要必须保留用户意图、关键决定、路径/工具结果，失败需要降级 | 使用本地结构化摘要为默认和降级路径，不在阶段 7 增加摘要模型调用 |
+| 当前阶段 5/6 数据流 | `agent.py`、`cli_runtime.py` | 压缩必须作用于每次模型请求，而不仅是下一轮开始前 | 增加通用消息准备钩子；CLI 会话负责手动命令和压缩统计展示 |
+
+### 4. 实现前设计
+
+- 新建 `context.py`，提供 `ContextPolicy`、`ContextManager`、`CompactionResult` 和可测试的估算函数。
+- 预算以 token 启发式统一表示；CJK 字符按更高权重估算，并计入角色、工具调用参数等协议开销。
+- 工具消息优先解析 Agent Loop 的 JSON 结果，只裁剪 `output` 字段并保留 `ok`、`error_code`、`tool_call_id` 和截断元数据。
+- 历史按用户消息划分完整轮次，摘要旧轮次，保留最近轮次，避免孤立的 tool message。
+- 摘要作为带明确前缀的 system 历史消息注入；主系统提示仍由每轮单独添加。
+- Agent Loop 接受可选消息准备器，使同一轮新产生的工具结果在下一次模型请求前也受预算保护。
+- `AgentSession` 自动压缩每个请求和轮次结果；`/compact` 强制压缩已有历史并报告前后预算。
+
+### 5. 验收测试计划
+
+- 英文、CJK、工具调用和工具结果的估算均为确定正整数。
+- 工具结果裁剪后 JSON 仍有效、关联 ID 不变，并保留头尾证据。
+- 压缩保留最近完整轮次并生成分区结构化摘要。
+- 自动压缩只在阈值达到后触发；手动压缩可以在阈值前执行。
+- 摘要器异常或空结果时使用本地降级摘要并暴露降级状态。
+- Agent 当前轮工具结果在再次请求模型前已裁剪；CLI `/compact` 可见且不破坏后续对话。
+
+### 6. 实现内容与关键数据流
+
+| 文件 | 新增或修改 | 作用 |
+|---|---|---|
+| `src/minicode_rebuild/context.py` | 新增 | token 估算、策略校验、工具裁剪、摘要和压缩结果 |
+| `src/minicode_rebuild/agent.py` | 修改 | 在每次模型请求前调用可选消息准备器 |
+| `src/minicode_rebuild/cli_runtime.py` | 修改 | 自动/手动压缩、历史替换和压缩统计 |
+| `src/minicode_rebuild/config.py` | 修改 | 从环境变量加载上下文策略 |
+| `src/minicode_rebuild/cli.py` | 修改 | 增加 `/compact` 并展示压缩结果 |
+| `tests/test_context.py` | 新增 | 覆盖预算、配对、摘要、降级、中文裁剪和系统提示保护 |
+
+```mermaid
+flowchart TD
+    History["系统提示 + 历史 + 当前消息"] --> Estimate["启发式 token 估算"]
+    Estimate --> Trim["优先裁剪超长工具 output"]
+    Trim --> Threshold{"达到自动阈值或手动强制?"}
+    Threshold -- "否" --> Request["发送给模型"]
+    Threshold -- "是" --> Split["按用户消息划分完整轮次"]
+    Split --> Protect["保护主系统提示和最近 N 轮"]
+    Split --> Summary["旧轮次结构化摘要"]
+    Summary --> Fallback{"自定义摘要失败?"}
+    Fallback -- "是" --> Local["本地确定性降级摘要"]
+    Fallback -- "否" --> Bound["再次强制摘要预算"]
+    Local --> Bound
+    Protect --> Bound
+    Bound --> Request
+```
+
+### 7. 预算、裁剪与摘要规则
+
+- `estimate_text_tokens()` 对 CJK 字符按约 1.5 字符/token、其他字符按约 4 字符/token 估算。
+- 消息估算额外计算角色、`tool_call_id`、工具名和 JSON 参数的协议开销。
+- 工具裁剪优先解析 Agent Loop 的 JSON 结果，仅替换 `output`；保留 `ok`、`error_code`、原始长度和已有截断状态。
+- 头尾证据使用同一估算器二分确定长度，因此英文和中文都不会超过工具输出预算。
+- 自动阈值为 `max_tokens * trigger_ratio`；未达到阈值仍会独立执行工具结果裁剪。
+- 压缩按用户消息划分轮次，最近 N 个完整轮次不会拆散 assistant 工具调用与对应 tool result。
+- 非摘要主系统提示始终保留；旧摘要参与下一次摘要，防止多次压缩后遗忘更早状态。
+- 本地结构化摘要按“用户请求、助手结论、工具活动”分区，并受独立摘要预算约束。
+
+### 8. 自动、手动与失败降级
+
+`AgentSession` 将 ContextManager 作为每次模型请求前的消息准备器，因此当前轮刚产生的长工具结果也会在下一步模型调用前裁剪。轮次完成后，压缩后的消息成为下一轮历史，并累计 `compactions`。
+
+交互模式的 `/compact` 会在自动阈值前强制压缩已有历史，输出压缩前后估算 token 和移除消息数。历史轮次不足时返回 `not needed`，不会伪造压缩事件。
+
+ContextManager 可注入自定义同步摘要器；若它抛出异常或返回空文本，则记录错误并使用本地摘要。即使自定义摘要器忽略预算返回超长内容，最后仍会通过同一 token 估算器做强制头尾限长。
+
+### 9. 测试与验证
+
+测试先行红灯：首次执行阶段 7 测试时，测试收集得到 `ModuleNotFoundError: No module named 'minicode_rebuild.context'`。
+
+实现和复审后的真实验证：
+
+```text
+python -m pytest tests/test_context.py tests/test_agent_loop.py tests/test_cli_runtime.py tests/test_config.py tests/test_cli.py -q
+66 passed in 1.45s
+
+python -m pytest -q
+204 passed, 2 skipped in 1.80s
+
+python -m compileall -q src
+passed
+
+git diff --check
+passed
+```
+
+两个跳过项仍是 Windows 缺少创建符号链接权限，不是阶段 7 回归失败。
+
+### 10. 遇到的问题与解决过程
+
+| 问题 | 根因 | 解决方案 | 防回归测试 |
+|---|---|---|---|
+| 请求准备时发生压缩但统计为零 | 压缩最初只在轮次结束时计数 | 单独累计请求准备阶段压缩次数 | `test_session_automatically_compacts_at_threshold` |
+| 主系统提示可能进入旧历史摘要 | 最初按首个 user 之前全部算可移除前缀 | 区分主系统提示与带固定前缀的历史摘要 | `test_compaction_preserves_primary_system_prompt` |
+| 多次压缩可能丢弃旧摘要 | 旧摘要未作为摘要输入 | 把旧摘要归入被移除历史并设置“Earlier summaries”区 | `test_recompaction_carries_forward_earlier_summary` |
+| 自定义摘要器可能忽略预算 | 扩展返回值不可盲目信任 | 成功结果也执行最终强制限长 | `test_custom_summary_is_bounded_even_when_summarizer_ignores_budget` |
+| 字符限长不能严格限制中文 token | CJK 单字符权重高于英文 | 用 token 估算器二分搜索可保留头尾长度 | `test_cjk_tool_result_trimming_honors_token_budget` |
+
+### 11. 风险、限制与参考差异
+
+- token 数是启发式估算，不是 Provider 官方 tokenizer 的精确值；配置应保留余量。
+- 当前预算只控制传给模型的消息，不包括工具声明 schema 本身。
+- 默认摘要不理解语义等价，只提取可见文本、工具名、调用 ID 和结果证据。
+- 压缩结果只存在内存；阶段 8 才会定义持久化格式和恢复行为。
+- 当前轮次特别大且没有可移除的旧轮次时，只能裁剪工具结果，不能删除用户当前请求或主系统提示。
+
+参考 MiniCode 已包含模型窗口映射、Provider usage 边界、摘要模型、缓存、持久化历史和更多层级。本项目只实现阶段 7 的最小确定性闭环，采用不可变策略/结果对象，并把摘要模型做成可选依赖，避免压缩自身引入网络失败和额外费用。
+
+### 12. 本阶段知识点与自测问题
+
+- 上下文是当前模型请求的短期工作状态，长期记忆是跨压缩或跨会话的可检索知识，两者职责不同。
+- 工具结果常包含完整文件、搜索列表和命令输出，是上下文增长最快的消息类型。
+- 简单删除最老消息会破坏用户意图、决策证据以及工具调用/结果协议配对。
+- 最近完整轮次、主系统提示、用户目标和关键错误是压缩中优先保护的信息。
+
+1. 为什么工具裁剪应只修改 JSON 的 `output` 字段？
+2. 为什么多次压缩必须把旧摘要带入新摘要？
+3. 为什么自动压缩和 `/compact` 必须复用同一个 ContextManager？
+
+### 13. 阶段验收
+
+- [x] 提供确定、CJK-aware 的 token 启发式估算。
+- [x] 超长工具结果保持 JSON 协议与头尾证据，并严格受估算预算限制。
+- [x] 最近完整轮次、主系统提示和工具调用/结果配对不会被拆散。
+- [x] 旧历史被转换为分区结构化摘要，多次压缩继承旧摘要。
+- [x] 自动阈值与手动 `/compact` 均已接入 CLI 会话。
+- [x] 自定义摘要失败、为空或超预算时有确定降级。
+- [x] 当前轮工具结果在下一次模型请求前会被裁剪。
+- [x] 阶段测试、全量回归、编译和 diff 检查通过。
+
+### 14. Git 记录与下一阶段
+
+- 分支：`rebuild/minicode-learning`
+- 实现提交：`2bf4bfa`
+- 提交信息：`feat(phase-07): add context compaction`
+- 远程状态：实现提交已推送至 `origin/rebuild/minicode-learning`，并进入 Draft PR #3。
+
+阶段 8 将把当前内存历史与统计设计为可校验的会话持久化格式，并在文件变更前记录 Checkpoint，提供 transcript、恢复列表、rewind preview 和明确确认后的恢复操作。
+
+## 阶段 8：会话、Checkpoint 与 Rewind
+
+### 1. 阶段目标与非目标
+
+- 将对话消息、工具调用、统计与文件 Checkpoint 原子保存到工作区的 `.minicode-rebuild/sessions/`。
+- 支持列出会话、按 ID 恢复，以及在进程重启后继续使用原历史。
+- 由同一份规范化消息生成 transcript，保留 assistant 工具调用及对应 tool result。
+- 在获得写权限之后、真正修改 UTF-8 文件之前持久化 Checkpoint；写入失败时撤销无效 Checkpoint。
+- Rewind 先计算预览；只有再次明确确认才恢复。若当前文件已被外部修改，则拒绝覆盖。
+- 本阶段只覆盖内置 `write_file`、`edit_file` 和 `patch_file` 的可逆 UTF-8 文件变更；任意 shell 命令可能产生的副作用不能可靠推导，因此不声称可由 Rewind 恢复。
+- 不实现云同步、跨工作区恢复、二进制文件版本库、Git 替代品或自动定时保存线程。
+
+### 2. 参考分析与取舍
+
+| 参考项 | 路径 | 可复用认识 | 本项目取舍 |
+|---|---|---|---|
+| MiniCode 会话模块 | `D:\code\MiniCode-Python\minicode\session.py` | 会话列表应使用轻量元数据；Checkpoint 要记录文件是否原先存在及旧内容；恢复应按新到旧执行 | 阶段 8 使用单文件原子 JSON，避免提前引入增量 delta、全局索引和后台 autosave |
+| MiniCode 本地命令 | `D:\code\MiniCode-Python\minicode\cli_commands.py` | `/sessions`、`/checkpoints`、`/rewind-preview` 与 `/rewind` 应拆分，让检查和执行边界可见 | 为当前行式 CLI 提供更小的命令集，并在 `/rewind` 中要求输入完整 `yes` |
+| 当前原子写入边界 | `src/minicode_rebuild/file_changes.py` | 权限通过之后才能产生副作用；临时文件与 `os.replace` 已提供原子文件更新 | Checkpoint 钩子放在授权之后、临时文件创建之前；Checkpoint 保存失败则中止原写入 |
+
+### 3. 实现前设计
+
+- `SessionStore` 只接受当前工作区，并校验 schema 版本、会话 ID、记录中的 workspace 和所有恢复路径；损坏或跨工作区记录不能静默恢复。
+- 每次保存写入同目录临时文件，执行 `fsync` 后用 `os.replace` 原子替换；会话 JSON 不进入 Git。
+- `AgentSession` 在每轮完成和手动压缩后保存规范化历史与累计统计；恢复时重建 `Message`、`ToolCall` 和统计对象。
+- 文件 Checkpoint 保存相对路径、旧内容、文件原先是否存在、操作名和“修改后内容”哈希。该哈希用于发现 Agent 之后的外部编辑。
+- 同一文件连续修改时，Rewind 按 Checkpoint 从新到旧模拟与执行；选择较早 Checkpoint 会连同它之后的变更一起恢复，避免跳过中间状态。
+- `preview_rewind()` 只读取文件并生成最终 unified diff，不写磁盘；`apply_rewind(..., confirmed=False)` 必须拒绝。
+- CLI 使用 `--resume <session-id|latest>` 恢复；交互模式提供 `/session`、`/sessions`、`/transcript`、`/checkpoints`、`/rewind-preview [id]` 和 `/rewind [id]`。
+
+### 4. 验收测试计划
+
+- 会话 JSON 能跨 `SessionStore` 实例保存和加载消息、工具调用、统计；损坏、未知 schema、非法 ID 和跨工作区记录被拒绝。
+- 列表按更新时间排序，`latest` 能恢复最近会话；恢复后的下一次模型请求包含旧历史。
+- transcript 明确显示用户、assistant、工具名、调用 ID、参数与工具结果。
+- 权限拒绝和 no-op 不创建 Checkpoint；获批写入前已存在可加载 Checkpoint；底层写入失败会清理它。
+- 预览不修改文件；未确认执行被拒绝；确认后可以恢复旧内容或删除本次新建文件。
+- 当前内容哈希不匹配时预览标记冲突，执行恢复拒绝覆盖。
+- CLI 列表、恢复、历史显示和二次确认路径均有端到端测试。
+
+### 5. 实现内容与数据流
+
+| 文件 | 作用 |
+|---|---|
+| `src/minicode_rebuild/session.py` | schema 化 JSON 持久化、消息序列化、transcript、Checkpoint、预览、冲突检测与原子恢复 |
+| `src/minicode_rebuild/file_changes.py` | 在权限通过后、原子写入前调用 Checkpoint；失败时撤销无效记录；保护内部运行目录 |
+| `src/minicode_rebuild/tools/read_only.py` | 阻止模型读取会话内部目录，并从搜索遍历中忽略它 |
+| `src/minicode_rebuild/cli_runtime.py` | 创建或恢复会话、保存历史与统计、保留完整 transcript、向文件工具注入 Checkpoint 钩子 |
+| `src/minicode_rebuild/cli.py` | `--list-sessions`、`--resume` 及交互式会话、transcript、Checkpoint 和 Rewind 命令 |
+
+每轮完成后，压缩后的 `history` 作为下一轮工作上下文保存，当前轮的原始消息同时追加到独立 `transcript`。因此恢复不会绕过阶段 7 的上下文预算，而历史工具调用仍可完整审计。
+
+内置文件变更的数据流如下：权限确认 → 原子保存包含旧内容和修改后哈希的 Checkpoint → 原子写文件 → 若写入失败则移除该 Checkpoint。Rewind 会从目标 Checkpoint 起按时间倒序语义合并每个文件的最终旧状态，先比较当前哈希，再生成 current-to-rewind diff；只有 CLI 再次收到完整 `yes` 才执行。
+
+### 6. 安全审核与边界
+
+- 会话 ID 只接受 32 位小写十六进制，文件名无法构造目录穿越。
+- 读取时校验 schema、workspace、非负统计、Checkpoint ID、SHA-256 和恢复路径；损坏记录不会参与列表或恢复。
+- `.minicode-rebuild` 已加入 `.gitignore`，内置读写工具均拒绝直接访问，防止模型读取 transcript 或篡改恢复证据。
+- 保存会话与恢复旧内容均通过同目录临时文件、`fsync` 和 `os.replace`；恢复已有文件时保留权限位。
+- 外部修改会造成哈希冲突，预览明确列出，执行拒绝覆盖。
+- Rewind 不覆盖 `run_command` 的副作用，也不支持二进制文件；这是阶段 8 明确公开的恢复范围。
+
+### 7. 测试、审核与 Git 记录
+
+测试先行红灯为：
+
+```text
+ModuleNotFoundError: No module named 'minicode_rebuild.session'
+```
+
+完成实现和安全复审后的真实验证：
+
+```text
+python -m pytest tests/test_session.py tests/test_write_tools.py tests/test_read_only_tools.py tests/test_cli_runtime.py tests/test_cli.py -q
+93 passed, 1 skipped
+
+python -m pytest -q -rs
+224 passed, 2 skipped
+
+python -m compileall -q src tests
+passed
+
+git diff --check
+passed
+```
+
+跳过项仍是 Windows 环境缺少创建符号链接的权限，和本阶段功能无关。阶段 7 审核也在开发前重新执行：`204 passed, 2 skipped`，PR #3 为 OPEN、Draft、MERGEABLE 且无失败检查。
+
+- 分支：`rebuild/minicode-learning`
+- 实现提交：`b4afec3 feat(phase-08): add sessions checkpoints and rewind`
+- 发布目标：继续更新 Draft PR #3；提交前保持 `.phase4-work/` 未跟踪且未暂存。
+
+### 8. 阶段验收
+
+- [x] 进程重启后可以按 ID 或 `latest` 恢复历史与累计统计。
+- [x] `/sessions` 和 `--list-sessions` 可列出当前工作区会话。
+- [x] `/transcript` 可查看完整用户、assistant、工具调用参数和工具结果。
+- [x] 内置 UTF-8 文件工具在真正修改前持久化 Checkpoint。
+- [x] Rewind preview 不修改文件，并显示恢复或删除范围及 diff。
+- [x] 未完整输入 `yes` 前不执行恢复。
+- [x] 外部修改冲突、损坏会话和跨工作区数据均安全拒绝。
+- [x] 阶段测试、全量回归、编译与 diff 检查通过。
+
+### 9. 下一阶段
+
+阶段 9 将在持久化会话之上增加可解释的记忆提取与检索，但不会把完整 transcript 无筛选地注入模型。开始前需要定义记忆来源、去重、相关性、时效性、工作区隔离和用户可见的删除边界。
