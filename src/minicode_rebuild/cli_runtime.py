@@ -11,6 +11,7 @@ from minicode_rebuild.agent import AgentResult, run_agent_turn
 from minicode_rebuild.config import RuntimeSettings
 from minicode_rebuild.context import CompactionResult, ContextManager
 from minicode_rebuild.core import Message, MessageRole, ModelAdapter, ToolCall
+from minicode_rebuild.hooks import HookEvent, HookManager, HookReport
 from minicode_rebuild.permissions import (
     PermissionDecision,
     PermissionManager,
@@ -23,8 +24,9 @@ from minicode_rebuild.session import (
     SessionStore,
     format_transcript,
 )
+from minicode_rebuild.skills import SkillCatalog, SkillSummary
 from minicode_rebuild.tooling import ToolContext, ToolRegistry, ToolResult
-from minicode_rebuild.tools import MUTATING_TOOLS, READ_ONLY_TOOLS
+from minicode_rebuild.tools import EXTENSION_TOOLS, MUTATING_TOOLS, READ_ONLY_TOOLS
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +80,7 @@ def make_permission_prompt(
 def create_tool_registry() -> ToolRegistry:
     """Return the complete built-in registry in a stable order."""
 
-    return ToolRegistry((*READ_ONLY_TOOLS, *MUTATING_TOOLS))
+    return ToolRegistry((*READ_ONLY_TOOLS, *EXTENSION_TOOLS, *MUTATING_TOOLS))
 
 
 class AgentSession:
@@ -95,6 +97,8 @@ class AgentSession:
         context_manager: ContextManager | None = None,
         session_store: SessionStore | None = None,
         session_record: SessionRecord | None = None,
+        skill_catalog: SkillCatalog | None = None,
+        hooks: HookManager | None = None,
     ) -> None:
         self.model = model
         self.tools = tools
@@ -106,6 +110,8 @@ class AgentSession:
         )
         self.session_store = session_store
         self.session_record = session_record
+        self.skill_catalog = skill_catalog
+        self.hooks = hooks
         self.history = session_record.messages if session_record is not None else ()
         self.stats = (
             SessionStats(
@@ -123,6 +129,11 @@ class AgentSession:
         if session_store is not None and session_record is not None:
             self.context.state["checkpoint_recorder"] = self._record_checkpoint
             self.context.state["checkpoint_discarder"] = self._discard_checkpoint
+        if skill_catalog is not None:
+            self.context.state["skill_catalog"] = skill_catalog
+        if hooks is not None:
+            self.context.hooks = hooks
+            self.context.hook_observer = self._observe_hook
 
     @property
     def session_id(self) -> str | None:
@@ -171,23 +182,49 @@ class AgentSession:
             compactions=self.stats.compactions,
         )
         self.session_store.save(self.session_record)
+        self._emit(HookEvent.SESSION_SAVE, session_id=self.session_id)
 
     def _observe_tool(self, call: ToolCall, result: ToolResult) -> None:
         status = "ok" if result.ok else f"error ({result.error_code})"
         self.output.write(f"[tool] {call.name} -> {status}\n")
         self.output.flush()
 
+    def _observe_hook(self, report: HookReport) -> None:
+        for failure in report.failures:
+            self.output.write(
+                f"[hook:error] {failure.event.value}/{failure.name}: "
+                f"{failure.error}\n"
+            )
+        if report.failures:
+            self.output.flush()
+
+    def _emit(self, event: HookEvent, **data: object) -> None:
+        if self.hooks is None:
+            return
+        self._observe_hook(self.hooks.emit(event, **data))
+
+    def _system_prompt(self) -> str:
+        parts = [self.settings.system_prompt.strip()]
+        if self.skill_catalog is not None:
+            parts.append(self.skill_catalog.prompt_summary())
+        return "\n\n".join(part for part in parts if part)
+
     def run(self, user_message: str) -> AgentResult:
         """Run one turn, retain normalized history, and update counters."""
 
         self._request_compactions = 0
+        self._emit(
+            HookEvent.AGENT_START,
+            session_id=self.session_id,
+            user_message=user_message,
+        )
         result = run_agent_turn(
             model=self.model,
             tools=self.tools,
             context=self.context,
             user_message=user_message,
             history=self.history,
-            system_prompt=self.settings.system_prompt,
+            system_prompt=self._system_prompt(),
             max_steps=self.settings.max_steps,
             tool_observer=self._observe_tool,
             message_preparer=self._prepare_messages,
@@ -213,6 +250,12 @@ class AgentSession:
             ),
         )
         self._persist(new_transcript=self._current_turn(result.messages, user_message))
+        self._emit(
+            HookEvent.AGENT_STOP,
+            session_id=self.session_id,
+            stop_reason=result.stop_reason.value,
+            completed=result.completed,
+        )
         return result
 
     def _prepare_messages(
@@ -250,6 +293,11 @@ class AgentSession:
     def list_sessions(self) -> list[SessionRecord]:
         return [] if self.session_store is None else self.session_store.list()
 
+    def list_skills(self) -> tuple[SkillSummary, ...]:
+        """Return workspace skill metadata without loading instruction bodies."""
+
+        return () if self.skill_catalog is None else self.skill_catalog.discover()
+
     def preview_rewind(self, checkpoint_id: str | None = None) -> RewindPlan:
         if self.session_store is None or self.session_record is None:
             raise RuntimeError("Session persistence is disabled")
@@ -271,13 +319,14 @@ def build_session(
     output: TextIO,
     permission_prompt: Callable[[PermissionRequest], PermissionDecision] | None,
     resume: str | None = None,
+    hooks: HookManager | None = None,
 ) -> AgentSession:
     """Assemble the default registry, permission boundary, and session."""
 
     permissions = PermissionManager(prompt=permission_prompt)
     store = SessionStore(workspace)
     record = store.load(resume) if resume is not None else store.create()
-    return AgentSession(
+    session = AgentSession(
         model=model,
         tools=create_tool_registry(),
         context=ToolContext(workspace, permissions=permissions),
@@ -286,7 +335,14 @@ def build_session(
         context_manager=ContextManager(settings.context_policy),
         session_store=store,
         session_record=record,
+        skill_catalog=SkillCatalog(workspace),
+        hooks=hooks,
     )
+    session._emit(
+        HookEvent.SESSION_RESUME if resume is not None else HookEvent.SESSION_CREATE,
+        session_id=session.session_id,
+    )
+    return session
 
 
 __all__ = [

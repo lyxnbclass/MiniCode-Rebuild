@@ -215,7 +215,7 @@ def _run_interactive(
         "MiniCode Rebuild interactive\n"
         f"Session: {session.session_id}\n"
         "Commands: /help, /session, /sessions, /transcript, /checkpoints, "
-        "/rewind-preview [id], /rewind [id], /stats, /compact, /exit\n"
+        "/rewind-preview [id], /rewind [id], /skills, /stats, /compact, /exit\n"
     )
     output.flush()
     while True:
@@ -234,7 +234,7 @@ def _run_interactive(
         if user_message == "/help":
             output.write(
                 "Commands: /help, /session, /sessions, /transcript, /checkpoints, "
-                "/rewind-preview [id], /rewind [id], /stats, /compact, /exit\n"
+                "/rewind-preview [id], /rewind [id], /skills, /stats, /compact, /exit\n"
             )
             continue
         if user_message == "/session":
@@ -262,6 +262,13 @@ def _run_interactive(
                 output.write("No active checkpoints.\n")
             for item in active:
                 output.write(f"{item.checkpoint_id} {item.operation} {item.path}\n")
+            continue
+        if user_message == "/skills":
+            skills = session.list_skills()
+            if not skills:
+                output.write("No workspace skills discovered.\n")
+            for skill in skills:
+                output.write(f"{skill.name}: {skill.description}\n")
             continue
         if user_message == "/rewind-preview" or user_message.startswith("/rewind-preview "):
             checkpoint_id = user_message[len("/rewind-preview") :].strip() or None

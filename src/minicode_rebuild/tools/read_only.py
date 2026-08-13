@@ -32,6 +32,7 @@ _SKIP_DIRS = frozenset(
         ".hg",
         ".mypy_cache",
         ".minicode-rebuild",
+        ".minicode",
         ".pytest_cache",
         ".ruff_cache",
         ".svn",
@@ -53,10 +54,13 @@ def _resolve(
     try:
         target = resolve_workspace_path(context.cwd, input_path)
         relative = target.relative_to(context.cwd.resolve())
-        if relative.parts and relative.parts[0].casefold() == ".minicode-rebuild":
+        if relative.parts and relative.parts[0].casefold() in {
+            ".minicode-rebuild",
+            ".minicode",
+        }:
             return None, ToolResult.error(
                 "reserved_path",
-                "The .minicode-rebuild runtime directory is managed internally.",
+                "The requested runtime or extension directory is managed internally.",
             )
         return target, None
     except WorkspacePathError as exc:

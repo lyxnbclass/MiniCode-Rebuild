@@ -4,7 +4,7 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 
 ## 当前状态
 
-阶段 0“仓库初始化与工程基线”至阶段 8“会话、Checkpoint 与 Rewind”已经完成。
+阶段 0“仓库初始化与工程基线”至阶段 9“Skills、Hooks 与扩展机制”已经完成。
 
 目前已经具备：
 
@@ -33,9 +33,19 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 - 在工作区内持久化会话、统计和完整 transcript，并支持跨进程恢复；
 - 在内置文件工具修改前记录 Checkpoint，先预览、再确认 Rewind；
 - 使用修改后哈希阻止 Rewind 覆盖 Agent 之后发生的外部编辑；
+- 扫描工作区 `.minicode/skills/<name>/SKILL.md`，仅注入有界元数据，并通过 `load_skill` 按需加载正文；
+- 在 Agent、会话与工具边界注册进程内 Hooks，隔离并显式报告 Hook 失败；
 - 执行自动化测试。
 
-真实模型适配器、工具注册表、安全工作区工具、Agent Loop、上下文管理和会话恢复已经接入 CLI。下一阶段将继续扩展记忆与检索能力。
+真实模型适配器、工具注册表、安全工作区工具、Agent Loop、上下文管理、会话恢复和扩展机制已经接入 CLI。下一阶段将进行可观测性、质量与发布准备。
+
+## Skills 与 Hooks
+
+项目 Skill 放在工作区的 `.minicode/skills/<name>/SKILL.md`。目录名使用字母、数字、点、下划线或连字符；可选 frontmatter 中的 `name` 必须与目录名一致。运行时只把名称和描述放入系统提示，模型判断相关后才调用只读的 `load_skill` 工具加载单个正文。交互模式可用 `/skills` 查看当前发现结果。
+
+Hooks 是供 Python 嵌入方使用的进程内扩展点。`HookManager` 支持 `agent_start`、`agent_stop`、`session_create`、`session_resume`、`session_save`、`before_tool` 和 `after_tool`。Handler 收到只读数据快照；普通异常不会中断 Agent 或工具，但会写入 Hook report，并由默认终端运行时显示 `[hook:error]`。Hooks 不绕过工作区、权限、Checkpoint 或工具参数校验。
+
+本阶段不加载任意 Hook 配置或外部脚本，也不实现 MCP；这些能力需要独立威胁模型和验收标准。
 
 ## 环境要求
 

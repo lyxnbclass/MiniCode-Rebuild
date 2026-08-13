@@ -8,12 +8,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前阶段 | 阶段 9：记忆与检索（待开始） |
-| 最近完成 | 阶段 8：会话、Checkpoint 与 Rewind |
+| 当前阶段 | 阶段 10：可观测性、质量与发布准备（待开始） |
+| 最近完成 | 阶段 9：Skills、Hooks 与扩展机制 |
 | 当前分支 | `rebuild/minicode-learning` |
 | 最新阶段实现提交 | `b4afec3 feat(phase-08): add sessions checkpoints and rewind` |
 | 测试状态 | 阶段 8 相关测试 `93 passed, 1 skipped`；全量回归 `224 passed, 2 skipped` |
-| 下一步 | 分析阶段 9 的记忆提取、存储、检索与注入边界 |
+| 下一步 | 完成结构化日志、运行时间线、Provider readiness、质量门禁与安装演示 |
 
 ## 总体架构
 
@@ -1583,4 +1583,59 @@ passed
 
 ### 9. 下一阶段
 
-阶段 9 将在持久化会话之上增加可解释的记忆提取与检索，但不会把完整 transcript 无筛选地注入模型。开始前需要定义记忆来源、去重、相关性、时效性、工作区隔离和用户可见的删除边界。
+阶段 9 按主执行规范实现 Skills、Hooks 与扩展机制。长期记忆与检索仍属于阶段 11 的可选高级能力，不在基础能力稳定前提前实现。
+
+## 阶段 9：Skills、Hooks 与扩展机制
+
+### 1. 阶段目标与非目标
+
+- 扫描工作区 `.minicode/skills/<name>/SKILL.md`，提供可解释的名称、描述和路径。
+- 系统提示只注入有界目录；完整 Skill 正文由 `load_skill` 工具按名称、按需加载。
+- 提供 Agent 开始/停止、会话创建/恢复/保存和工具执行前/后的同步生命周期 Hook。
+- Hook 普通异常必须隔离、记录并对终端用户可见，不能静默改变主流程结果。
+- 不从磁盘自动执行 Hook 脚本，不加载 Python 插件，不给予 Hook 额外权限，不实现 MCP。
+
+### 2. 参考分析与取舍
+
+参考 `D:\code\MiniCode-Python\minicode\skills.py`、`tools/load_skill.py` 与 `hooks.py`。参考实现同时扫描用户级和兼容目录，并支持异步/外部脚本 Hook；本阶段缩小为工作区单一来源和进程内同步注册，避免用户主目录隐式输入、脚本执行与事件循环复杂度。Skills 采用渐进加载：发现阶段读取文件以提取元数据，但不把正文放入模型请求；只有模型明确调用 `load_skill` 才返回单个正文。
+
+### 3. 模块与扩展边界
+
+- `skills.py`：安全名称、128 KiB 单文件上限、100 个目录上限、UTF-8 校验、frontmatter 名称一致性和 workspace realpath 守卫。
+- `tools/skills.py`：唯一模型可见的 `load_skill` 入口；未知、越界或损坏 Skill 返回稳定 `skill_error`。
+- `hooks.py`：无全局单例的 `HookManager`、只读深拷贝 `HookContext`、`HookReport` 与明确失败列表。
+- `ToolRegistry`：在已完成参数校验后触发 `before_tool`，工具结束或普通执行异常规范化后触发 `after_tool`；Hook 不修改参数或结果。
+- `AgentSession`：负责生命周期事件、技能目录系统提示、Hook 错误终端展示；核心 `run_agent_turn()` 未依赖 Skills 或 Hooks。
+
+`.minicode` 与 `.minicode-rebuild` 一样被内置通用读写/搜索工具保留。模型只能通过受限 `load_skill` 阅读 Skill，不能用 `read_file` 绕过按需加载，也不能通过写工具篡改运行中指令。Hooks 仅能由可信 Python 装配层显式注册，未引入自动发现或任意代码执行。
+
+### 4. Hook 事件契约
+
+| 事件 | 触发位置 | 可见数据 |
+|---|---|---|
+| `session_create` / `session_resume` | 默认会话装配完成 | session ID |
+| `agent_start` | 每个用户轮次进入循环前 | session ID、用户输入 |
+| `before_tool` | 工具存在且参数 schema 验证通过后 | 工具名、参数深拷贝 |
+| `after_tool` | 工具结果完成规范化与截断后 | 工具名、结构化结果 |
+| `session_save` | 会话原子保存成功后 | session ID |
+| `agent_stop` | 结果保存完成后 | stop reason、completed |
+
+未知工具和参数验证失败不会触发工具 Hook，因为没有进入具体工具执行边界。`KeyboardInterrupt` 与 `SystemExit` 等 `BaseException` 继续传播，避免 Hook 或工具吞掉进程控制信号。
+
+### 5. 验收与验证
+
+- [x] 可发现有效 `SKILL.md`，系统提示只包含名称和描述。
+- [x] `load_skill` 每次只加载显式命名的单个正文。
+- [x] 目录穿越、frontmatter 名称不一致、越界路径和保留目录通用访问被拒绝。
+- [x] Agent、会话和工具生命周期事件可由嵌入方注册。
+- [x] Hook 失败不阻断后续 Hook、工具或 Agent，并生成可见错误报告。
+- [x] 核心 Agent Loop 未反向依赖扩展模块。
+- [x] MCP 明确延后为独立阶段。
+
+阶段相关测试覆盖 Skills 扫描/加载/隔离、Hook 顺序/失败/工具边界、系统提示渐进注入和终端错误展示。全量测试、`compileall` 与 `git diff --check` 在提交前重新执行并记录真实结果。
+
+### 6. 风险、限制与下一阶段
+
+Skill frontmatter 只解析本阶段所需的单行 `name` 与 `description`，不是通用 YAML；损坏或过大的 Skill 在扫描中跳过，显式加载时返回错误。同步 Hook 应保持快速，阶段 10 将通过时间线与结构化日志提高耗时可见性。Hook 注册是编程接口，不是面向不可信项目代码的自动插件系统。
+
+阶段 10 将完成可观测性、质量与发布准备，包括结构化日志、运行时间线、Provider readiness、lint/type check、安装验证、跨平台说明、演示脚本与发布检查清单。

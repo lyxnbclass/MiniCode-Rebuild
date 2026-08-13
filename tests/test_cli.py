@@ -238,7 +238,7 @@ def test_interactive_mode_keeps_history_and_supports_commands(
     code = main(
         ["--interactive", "--cwd", str(tmp_path)],
         environment={"OPENAI_API_KEY": "secret"},
-        stdin=StringIO("one\n/stats\ntwo\n/compact\n/help\n/exit\n"),
+        stdin=StringIO("one\n/stats\ntwo\n/compact\n/skills\n/help\n/exit\n"),
         stdout=stdout,
         stderr=StringIO(),
         model=model,
@@ -251,6 +251,7 @@ def test_interactive_mode_keeps_history_and_supports_commands(
     assert "turns=1" in output
     assert "/stats" in output and "/exit" in output
     assert "Context compact" in output
+    assert "No workspace skills discovered." in output
     assert "Goodbye" in output
     assert [message.content for message in model.requests[1].messages[-3:]] == [
         "one",

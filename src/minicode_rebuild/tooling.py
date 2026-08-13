@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Self, TypeAlias
 from minicode_rebuild.core import JsonValue, ModelTool
 
 if TYPE_CHECKING:
+    from minicode_rebuild.hooks import HookManager, HookObserver
     from minicode_rebuild.permissions import PermissionManager
 
 ToolHandler: TypeAlias = Callable[
@@ -44,6 +45,8 @@ class ToolContext:
     cwd: Path
     state: MutableMapping[str, object] = field(default_factory=dict)
     permissions: "PermissionManager | None" = None
+    hooks: "HookManager | None" = None
+    hook_observer: "HookObserver | None" = None
 
     def __post_init__(self) -> None:
         self.cwd = Path(self.cwd)
@@ -200,12 +203,18 @@ class ToolRegistry:
             )
 
         safe_arguments = deepcopy(dict(arguments))
+        self._emit_hook(
+            context,
+            "BEFORE_TOOL",
+            tool_name=tool.name,
+            arguments=safe_arguments,
+        )
         try:
             result = tool.handler(safe_arguments, context)
         except Exception as exc:
             detail = str(exc)
             suffix = f": {detail}" if detail else ""
-            return self._finalize(
+            result = self._finalize(
                 ToolResult.error(
                     "execution_error",
                     f"Error running tool '{tool.name}': "
@@ -213,9 +222,11 @@ class ToolRegistry:
                 ),
                 limit,
             )
+            self._emit_after_tool(context, tool.name, result)
+            return result
 
         if not isinstance(result, ToolResult):
-            return self._finalize(
+            result = self._finalize(
                 ToolResult.error(
                     "invalid_result",
                     f"Tool '{tool.name}' must return ToolResult, "
@@ -223,7 +234,37 @@ class ToolRegistry:
                 ),
                 limit,
             )
-        return self._finalize(result, limit)
+            self._emit_after_tool(context, tool.name, result)
+            return result
+        result = self._finalize(result, limit)
+        self._emit_after_tool(context, tool.name, result)
+        return result
+
+    @staticmethod
+    def _emit_hook(context: ToolContext, event_name: str, **data: object) -> None:
+        if context.hooks is None:
+            return
+        from minicode_rebuild.hooks import HookEvent
+
+        report = context.hooks.emit(HookEvent[event_name], **data)
+        if context.hook_observer is not None:
+            context.hook_observer(report)
+
+    @classmethod
+    def _emit_after_tool(
+        cls, context: ToolContext, tool_name: str, result: ToolResult
+    ) -> None:
+        cls._emit_hook(
+            context,
+            "AFTER_TOOL",
+            tool_name=tool_name,
+            result={
+                "ok": result.ok,
+                "output": result.output,
+                "error_code": result.error_code,
+                "truncated": result.truncated,
+            },
+        )
 
     @staticmethod
     def _finalize(result: ToolResult, limit: int) -> ToolResult:
