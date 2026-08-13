@@ -1,8 +1,6 @@
 """Built-in tool definitions."""
 
 from minicode_rebuild.tools.command import run_command_tool
-from minicode_rebuild.tools.skills import load_skill_tool
-
 from minicode_rebuild.tools.read_only import (
     READ_ONLY_TOOLS,
     glob_search_tool,
@@ -10,6 +8,7 @@ from minicode_rebuild.tools.read_only import (
     list_files_tool,
     read_file_tool,
 )
+from minicode_rebuild.tools.skills import load_skill_tool
 from minicode_rebuild.tools.write import (
     WRITE_TOOLS,
     edit_file_tool,

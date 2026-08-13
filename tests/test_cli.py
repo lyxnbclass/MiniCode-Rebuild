@@ -52,6 +52,60 @@ def test_module_entrypoint_rejects_unknown_argument() -> None:
     assert "unrecognized arguments: --unknown" in result.stderr
 
 
+def test_readiness_command_is_offline_and_redacts_key(tmp_path: Path) -> None:
+    stdout = StringIO()
+    code = main(
+        ["--readiness", "--cwd", str(tmp_path)],
+        environment={
+            "OPENAI_API_KEY": "private-key",
+            "OPENAI_BASE_URL": "https://example.test/v1",
+        },
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    assert code == 0
+    assert "Readiness: ready" in stdout.getvalue()
+    assert "private-key" not in stdout.getvalue()
+
+
+def test_readiness_returns_nonzero_when_provider_is_missing(tmp_path: Path) -> None:
+    stdout = StringIO()
+
+    code = main(
+        ["--readiness", "--cwd", str(tmp_path)],
+        environment={},
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    assert code == 1
+    assert "provider-config" in stdout.getvalue()
+
+
+def test_timeline_command_reads_redacted_demo_events(tmp_path: Path) -> None:
+    assert main(
+        ["--demo", "--cwd", str(tmp_path), "inspect"],
+        environment={},
+        stdout=StringIO(),
+        stderr=StringIO(),
+    ) == 0
+    stdout = StringIO()
+
+    code = main(
+        ["--timeline", "20", "--cwd", str(tmp_path)],
+        environment={},
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    assert code == 0
+    output = stdout.getvalue()
+    assert "session_create" in output
+    assert "before_tool tool_name=list_files" in output
+    assert "inspect" not in output
+
+
 def test_demo_runs_complete_headless_tool_flow(tmp_path: Path) -> None:
     stdout = StringIO()
     stderr = StringIO()
@@ -238,7 +292,7 @@ def test_interactive_mode_keeps_history_and_supports_commands(
     code = main(
         ["--interactive", "--cwd", str(tmp_path)],
         environment={"OPENAI_API_KEY": "secret"},
-        stdin=StringIO("one\n/stats\ntwo\n/compact\n/skills\n/help\n/exit\n"),
+        stdin=StringIO("one\n/stats\ntwo\n/compact\n/skills\n/timeline\n/help\n/exit\n"),
         stdout=stdout,
         stderr=StringIO(),
         model=model,
@@ -252,6 +306,7 @@ def test_interactive_mode_keeps_history_and_supports_commands(
     assert "/stats" in output and "/exit" in output
     assert "Context compact" in output
     assert "No workspace skills discovered." in output
+    assert "agent_stop" in output
     assert "Goodbye" in output
     assert [message.content for message in model.requests[1].messages[-3:]] == [
         "one",

@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 
 from minicode_rebuild.hooks import HookEvent, HookManager
-from minicode_rebuild.tooling import ToolContext, ToolDefinition, ToolRegistry, ToolResult
+from minicode_rebuild.tooling import (
+    ToolContext,
+    ToolDefinition,
+    ToolRegistry,
+    ToolResult,
+)
 
 
 def _tool(handler=None) -> ToolDefinition:

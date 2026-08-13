@@ -4,7 +4,7 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 
 ## 当前状态
 
-阶段 0“仓库初始化与工程基线”至阶段 9“Skills、Hooks 与扩展机制”已经完成。
+阶段 0“仓库初始化与工程基线”至阶段 10“可观测性、质量与发布准备”已经完成。
 
 目前已经具备：
 
@@ -35,9 +35,32 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 - 使用修改后哈希阻止 Rewind 覆盖 Agent 之后发生的外部编辑；
 - 扫描工作区 `.minicode/skills/<name>/SKILL.md`，仅注入有界元数据，并通过 `load_skill` 按需加载正文；
 - 在 Agent、会话与工具边界注册进程内 Hooks，隔离并显式报告 Hook 失败；
+- 将脱敏生命周期元数据写入工作区 JSONL 日志，并通过时间线查看运行过程；
+- 离线检查 Python、运行配置、Provider 配置、会话存储与 Skills readiness；
+- 使用 Ruff、Mypy、分支覆盖率、构建、安装和跨平台 CI 作为发布质量门禁；
 - 执行自动化测试。
 
-真实模型适配器、工具注册表、安全工作区工具、Agent Loop、上下文管理、会话恢复和扩展机制已经接入 CLI。下一阶段将进行可观测性、质量与发布准备。
+阶段 0 至阶段 10 的基础路线已经完成。后续高级能力必须从阶段 11 清单中单独选择、设计、测试和提交。
+
+## 可观测性与 Readiness
+
+每次 CLI 会话默认把生命周期元数据追加到工作区 `.minicode-rebuild/events.jsonl`。日志只包含时间、事件名、session ID、工具名、成功状态、错误代码和停止原因；不保存用户提示、工具参数、工具输出或 API Key。该目录已从 Git 和模型通用文件工具中隔离。
+
+查看最近 100 条脱敏事件：
+
+```bash
+minicode-rebuild --timeline
+minicode-rebuild --timeline 20
+```
+
+交互模式可以使用 `/timeline`。离线检查 Provider 与本地运行条件：
+
+```bash
+minicode-rebuild --readiness
+minicode-rebuild --demo --readiness
+```
+
+`--readiness` 不会向 Provider 发送请求或验证余额，只检查本地配置结构。普通模式缺少 API Key 时返回非零状态；`--demo --readiness` 不要求 Key。
 
 ## Skills 与 Hooks
 
@@ -294,6 +317,30 @@ print(result.stop_reason.value, result.content)
 ```bash
 python -m pytest -q
 ```
+
+完整质量门禁：
+
+```bash
+python scripts/release_check.py
+```
+
+它依次运行 Ruff、Mypy、分支覆盖率测试、`compileall`、使用当前已安装构建依赖的 sdist/wheel 构建和无网络 MockModel 演示。当前覆盖率门槛为 85%。GitHub Actions 会在 Windows 与 Ubuntu、Python 3.11 与 3.13 上执行相同门禁。
+
+只运行可复现演示：
+
+```bash
+python scripts/demo.py
+```
+
+## 跨平台与发布检查清单
+
+- Windows 使用 `\.venv\Scripts\python.exe`，macOS/Linux 使用 `./.venv/bin/python`；项目业务命令仍通过参数数组和 `shell=False` 执行。
+- 两个符号链接安全测试在未授予 Windows 创建符号链接权限时会跳过；CI 的 Ubuntu 任务覆盖该路径。
+- 终端输出、Skill、会话和事件日志统一使用 UTF-8；Windows 文件替换与权限位行为已有平台保护。
+- 发布前确认 Ruff、Mypy、覆盖率测试、编译、构建、全新环境 wheel 安装和 Mock 演示全部通过。
+- 检查 Git diff 中没有 `.env`、API Key、会话、事件日志、缓存、构建产物或无关目录。
+- 核对 README、`--help`、版本号、Python 版本范围、PR 测试结果和实际行为一致。
+- 真实 Provider 验收需由用户自行提供有效 Key；默认质量门禁不发起计费请求。
 
 ## 开发原则
 

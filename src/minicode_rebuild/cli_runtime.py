@@ -12,6 +12,7 @@ from minicode_rebuild.config import RuntimeSettings
 from minicode_rebuild.context import CompactionResult, ContextManager
 from minicode_rebuild.core import Message, MessageRole, ModelAdapter, ToolCall
 from minicode_rebuild.hooks import HookEvent, HookManager, HookReport
+from minicode_rebuild.observability import EventLog, format_timeline
 from minicode_rebuild.permissions import (
     PermissionDecision,
     PermissionManager,
@@ -99,6 +100,7 @@ class AgentSession:
         session_record: SessionRecord | None = None,
         skill_catalog: SkillCatalog | None = None,
         hooks: HookManager | None = None,
+        event_log: EventLog | None = None,
     ) -> None:
         self.model = model
         self.tools = tools
@@ -112,6 +114,7 @@ class AgentSession:
         self.session_record = session_record
         self.skill_catalog = skill_catalog
         self.hooks = hooks
+        self.event_log = event_log
         self.history = session_record.messages if session_record is not None else ()
         self.stats = (
             SessionStats(
@@ -298,6 +301,13 @@ class AgentSession:
 
         return () if self.skill_catalog is None else self.skill_catalog.discover()
 
+    def timeline(self, *, limit: int = 100) -> str:
+        """Render recent redacted runtime events for this workspace."""
+
+        if self.event_log is None:
+            return "Runtime event logging is disabled."
+        return format_timeline(self.event_log.read(limit=limit))
+
     def preview_rewind(self, checkpoint_id: str | None = None) -> RewindPlan:
         if self.session_store is None or self.session_record is None:
             raise RuntimeError("Session persistence is disabled")
@@ -320,6 +330,7 @@ def build_session(
     permission_prompt: Callable[[PermissionRequest], PermissionDecision] | None,
     resume: str | None = None,
     hooks: HookManager | None = None,
+    event_log: EventLog | None = None,
 ) -> AgentSession:
     """Assemble the default registry, permission boundary, and session."""
 
@@ -337,6 +348,7 @@ def build_session(
         session_record=record,
         skill_catalog=SkillCatalog(workspace),
         hooks=hooks,
+        event_log=event_log,
     )
     session._emit(
         HookEvent.SESSION_RESUME if resume is not None else HookEvent.SESSION_CREATE,

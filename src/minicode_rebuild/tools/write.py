@@ -107,9 +107,16 @@ def _patch_file(
     return apply_file_change(target, next_content, context, operation="patch_file")
 
 
-_PATH_SCHEMA = {"type": "string", "minLength": 1, "maxLength": 4_096}
-_CONTENT_SCHEMA = {"type": "string", "maxLength": MAX_FILE_CONTENT}
-_REPLACEMENT_SCHEMA = {
+_PATH_SCHEMA: dict[str, JsonValue] = {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 4_096,
+}
+_CONTENT_SCHEMA: dict[str, JsonValue] = {
+    "type": "string",
+    "maxLength": MAX_FILE_CONTENT,
+}
+_REPLACEMENT_SCHEMA: dict[str, JsonValue] = {
     "type": "object",
     "properties": {
         "search": {"type": "string", "minLength": 1, "maxLength": MAX_FILE_CONTENT},

@@ -7,6 +7,7 @@ import re
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 from minicode_rebuild.core import JsonValue
 from minicode_rebuild.permissions import (
@@ -74,7 +75,7 @@ def _run_command(
     if cwd_error is not None:
         return cwd_error
     assert cwd is not None
-    timeout = int(arguments.get("timeout", DEFAULT_TIMEOUT))
+    timeout = cast(int, arguments.get("timeout", DEFAULT_TIMEOUT))
     assessment = classify_command_risk(command, command_args)
     vector = [command, *command_args]
     signature = json.dumps(vector, ensure_ascii=False, separators=(",", ":"))

@@ -8,6 +8,7 @@ import os
 import re
 from collections.abc import Iterator, Mapping
 from pathlib import Path, PurePosixPath
+from typing import cast
 
 from minicode_rebuild.core import JsonValue
 from minicode_rebuild.tooling import ToolContext, ToolDefinition, ToolResult
@@ -109,8 +110,8 @@ def _read_file(
     if type_error is not None:
         return type_error
 
-    offset = int(arguments.get("offset", 0))
-    limit = int(arguments.get("limit", DEFAULT_READ_LIMIT))
+    offset = cast(int, arguments.get("offset", 0))
+    limit = cast(int, arguments.get("limit", DEFAULT_READ_LIMIT))
     try:
         with target.open("r", encoding="utf-8", newline="") as stream:
             remaining = offset
@@ -153,7 +154,7 @@ def _list_files(
     if type_error is not None:
         return type_error
 
-    limit = int(arguments.get("limit", DEFAULT_LIST_LIMIT))
+    limit = cast(int, arguments.get("limit", DEFAULT_LIST_LIMIT))
     workspace_root = _workspace_root(context)
     try:
         entries = heapq.nsmallest(
@@ -233,7 +234,7 @@ def _glob_search(
     if type_error is not None:
         return type_error
 
-    limit = int(arguments.get("limit", DEFAULT_SEARCH_LIMIT))
+    limit = cast(int, arguments.get("limit", DEFAULT_SEARCH_LIMIT))
     workspace_root = _workspace_root(context)
     matches: list[Path] = []
     candidate_count = 0
@@ -327,7 +328,7 @@ def _grep_files(
     if type_error is not None:
         return type_error
 
-    limit = int(arguments.get("limit", DEFAULT_SEARCH_LIMIT))
+    limit = cast(int, arguments.get("limit", DEFAULT_SEARCH_LIMIT))
     workspace_root = _workspace_root(context)
     results: list[str] = []
     files_scanned = 0

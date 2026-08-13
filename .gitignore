@@ -12,6 +12,7 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+.coverage.*
 
 # Virtual environments
 .venv/

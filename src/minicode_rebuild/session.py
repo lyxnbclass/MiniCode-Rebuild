@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import difflib
 import hashlib
 import json
@@ -356,7 +357,9 @@ class SessionStore:
         ]
         self.save(record)
 
-    def _selected(self, record: SessionRecord, checkpoint_id: str | None) -> list[FileCheckpoint]:
+    def _selected(
+        self, record: SessionRecord, checkpoint_id: str | None
+    ) -> builtins.list[FileCheckpoint]:
         self._validate_record(record)
         active = [item for item in record.checkpoints if item.rewound_at is None]
         if not active:
@@ -368,7 +371,7 @@ class SessionStore:
         return active[positions[0] :]
 
     def _rewind_states(
-        self, selected: list[FileCheckpoint]
+        self, selected: builtins.list[FileCheckpoint]
     ) -> tuple[dict[str, str | None], tuple[str, ...]]:
         desired: dict[str, str | None] = {}
         latest: dict[str, FileCheckpoint] = {}

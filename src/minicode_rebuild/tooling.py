@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Self, TypeAlias
+from typing import TYPE_CHECKING, Self, TypeAlias, cast
 
 from minicode_rebuild.core import JsonValue, ModelTool
 
@@ -369,7 +369,7 @@ def _validate_size_bounds(
             isinstance(value, bool) or not isinstance(value, int) or value < 0
         ):
             raise ValueError(f"{path}.{label} must be a non-negative integer")
-    if minimum is not None and maximum is not None and minimum > maximum:
+    if isinstance(minimum, int) and isinstance(maximum, int) and minimum > maximum:
         raise ValueError(f"{path} minimum size must not exceed maximum size")
 
 
@@ -383,7 +383,13 @@ def _validate_number_bounds(schema: Mapping[str, JsonValue], path: str) -> None:
             or not _is_finite_number(value)
         ):
             raise ValueError(f"{path}.{label} must be a finite number")
-    if minimum is not None and maximum is not None and minimum > maximum:
+    if (
+        isinstance(minimum, (int, float))
+        and not isinstance(minimum, bool)
+        and isinstance(maximum, (int, float))
+        and not isinstance(maximum, bool)
+        and minimum > maximum
+    ):
         raise ValueError(f"{path}.minimum must not exceed maximum")
 
 
@@ -395,7 +401,7 @@ def _validate_value(
         raise ToolValidationError(f"{path} must be {schema_type}")
 
     enum = schema.get("enum")
-    if enum is not None and value not in enum:
+    if isinstance(enum, list) and cast(JsonValue, value) not in enum:
         raise ToolValidationError(f"{path} must be one of the allowed values")
 
     if schema_type == "object":

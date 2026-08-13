@@ -8,12 +8,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前阶段 | 阶段 10：可观测性、质量与发布准备（待开始） |
-| 最近完成 | 阶段 9：Skills、Hooks 与扩展机制 |
+| 当前阶段 | 阶段 11：可选高级能力（待选择） |
+| 最近完成 | 阶段 10：可观测性、质量与发布准备 |
 | 当前分支 | `rebuild/minicode-learning` |
 | 最新阶段实现提交 | `6201245 feat(phase-09): add skills and lifecycle hooks` |
-| 测试状态 | 阶段 9 相关测试 `98 passed, 1 skipped`；全量回归 `234 passed, 2 skipped` |
-| 下一步 | 完成结构化日志、运行时间线、Provider readiness、质量门禁与安装演示 |
+| 测试状态 | 阶段 10 相关测试 `37 passed`；全量回归 `244 passed, 2 skipped`；分支覆盖率 `85.08%` |
+| 下一步 | 从阶段 11 清单中选择一个独立高级能力，不打包推进 |
 
 ## 总体架构
 
@@ -1647,3 +1647,73 @@ Skill frontmatter 只解析本阶段所需的单行 `name` 与 `description`，�
 - 提交信息：`feat(phase-09): add skills and lifecycle hooks`
 - 文档收口提交：`28e5dc9 docs(phase-09): mark phase complete`。
 - 推送前复核发现 PR #3 已由用户合并至 `master`；阶段 9 提交位于其后的开发分支，将单独进入新的 Draft PR，不自动合并 `master`。
+
+## 阶段 10：可观测性、质量与发布准备
+
+### 1. 阶段目标与非目标
+
+- 用结构化、可解析的工作区事件日志记录 Agent、Session 与 Tool 生命周期。
+- 提供终端运行时间线和不访问网络的 Provider readiness 检查。
+- 把 Ruff、Mypy、分支覆盖率、编译、构建和 Mock 演示固化为一条发布门禁。
+- 通过 GitHub Actions 覆盖 Windows/Ubuntu 与 Python 3.11/3.13。
+- 实际验证 editable 安装、控制台入口、sdist/wheel 和无密钥演示。
+- 不在默认门禁中调用真实 Provider，不发布 PyPI，不自动创建 Release 或合并主分支。
+
+### 2. 参考分析与取舍
+
+参考 MiniCode Python 的 readiness surface、session replay 和 Provider 配置验证，只提取适合当前同步 CLI 的小边界。参考项目的时间线已混合更多控制器、记忆和任务图；本项目直接复用阶段 9 Hooks，把观察能力实现为可替换的事件接收器，避免再次修改核心 Agent Loop。
+
+Provider readiness 被定义为“本地配置可构造”，而不是“远程服务一定可用”。它检查 Python、RuntimeSettings、ModelSettings、SessionStore 与 SkillCatalog，不做 DNS、认证或模型可用性探测，因而不会泄露 Key 或产生费用。
+
+### 3. 可观测性设计与隐私边界
+
+`EventLog` 将一行一个 JSON 对象追加到 `.minicode-rebuild/events.jsonl`。允许字段按事件白名单固定：session ID、工具名、工具成功状态、错误代码、stop reason 和 completed。用户提示、系统提示、工具参数、工具输出及未知 Hook 字段全部丢弃；API Key 从不进入 Hook 数据。
+
+每行限制为 16 KiB，写入后 flush/fsync；读取最多 1,000 条，损坏行跳过，文件本身继续受阶段 8/9 的 Git 忽略与模型工具隔离保护。`--timeline [N]` 和交互 `/timeline` 只渲染这份脱敏数据。
+
+### 4. 质量门禁与自动化
+
+- `ruff check src tests scripts`：基本语法错误、未使用名称和 import 顺序。
+- `mypy`：检查 26 个源码文件，启用 untyped body、泛型和 Optional 相关约束。
+- `pytest --cov=minicode_rebuild`：全量分支覆盖，最低阈值 85%。
+- `compileall`：编译源码、测试与脚本。
+- `python -m build --no-isolation`：在已由 `.[dev]` 固定的构建环境生成 sdist 与通用 wheel；另行执行过隔离构建验证。
+- `scripts/demo.py`：临时工作区中运行两步 MockModel 工具演示并输出脱敏时间线。
+- GitHub Actions：Windows/Ubuntu × Python 3.11/3.13 执行同一 `release_check.py`。
+
+构建产物和 coverage 文件由 `.gitignore` 排除。质量依赖只在 `.[dev]` 中，不增加用户运行时第三方依赖。
+
+### 5. 实际验证
+
+- 阶段 10 相关测试：`37 passed`。
+- 全量测试与覆盖率：`244 passed, 2 skipped`，分支覆盖率 `85.08%`，达到 `85%` 门槛。
+- Mypy：`Success: no issues found in 26 source files`。
+- Ruff：`All checks passed!`。
+- `compileall`：通过。
+- Mock demo：完成 `list_files` 工具调用、最终响应、统计与六类生命周期事件展示。
+- 隔离构建：成功生成 `minicode_rebuild-0.1.0.tar.gz` 与 `minicode_rebuild-0.1.0-py3-none-any.whl`。
+- editable 安装与控制台入口：`minicode-rebuild 0.1.0`、`--help` 通过。
+
+两个 skip 来自当前 Windows 环境未授予符号链接创建权限；Linux CI 将执行对应真实路径逃逸测试。隔离构建首次在沙箱中因不能下载 build requirements 失败，获准联网后成功，属于环境网络限制而非项目缺陷。
+
+### 6. 发布检查清单与限制
+
+- [x] README 可复制安装、readiness、timeline、演示与质量门禁命令。
+- [x] 结构化日志不含提示、参数、输出或凭据。
+- [x] MockModel 演示无需密钥和网络且可复现。
+- [x] 测试、覆盖率、lint、type check、编译和构建通过。
+- [x] Windows/Linux 差异与符号链接跳过原因已说明。
+- [x] `.env`、运行日志、会话、构建产物、coverage 与无关目录不进入提交。
+- [x] 文档与 CLI 的 `--help`、退出码和真实行为一致。
+
+当前事件日志是追加式单进程文件，没有轮转、跨进程锁或远程导出；高并发/长期运行需要独立设计。readiness 不证明 Key 有效、模型存在或账户余额充足。Python 3.11/3.13 的最终跨平台结果由新 PR 的 GitHub Actions 给出。
+
+### 7. 下一阶段
+
+阶段 0 至阶段 10 的基础路线完成。阶段 11 不应默认“大合集”继续推进；需要从多 Agent、Git Worktree、MCP、长期记忆与检索、多模型路由、成本控制、完整 TUI 或上下文调节中选择一个能力，建立独立威胁模型、测试和提交。
+
+### 8. 构建门禁修复记录
+
+第一次把隔离构建直接放进一键脚本时，沙箱环境无法下载临时 build requirements；改为 `--no-isolation` 后又发现项目 dev 环境未显式安装 setuptools/wheel。将二者加入 `.[dev]` 后，重复写已有 `dist` 文件在 Windows 触发访问拒绝。最终门禁为每次构建创建新的临时输出目录，既不依赖临时联网，也不覆盖旧产物。
+
+此外使用全新 `.verify-venv` 从生成的 wheel 执行 `pip --no-index` 安装，`minicode-rebuild --version` 和 `--demo` 均成功，证明控制台入口和运行时依赖没有依赖 editable checkout。验证目录与构建产物已清理，未进入 Git。

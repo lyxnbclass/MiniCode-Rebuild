@@ -9,7 +9,6 @@ from minicode_rebuild.session import (
     RewindConfirmationRequired,
     RewindConflictError,
     SessionFormatError,
-    SessionRecord,
     SessionStatsData,
     SessionStore,
     format_transcript,
@@ -76,7 +75,7 @@ def test_checkpoint_path_escape_in_persisted_session_is_rejected(tmp_path: Path)
     store = SessionStore(tmp_path)
     record = store.create()
     target = tmp_path / "demo.txt"
-    checkpoint = store.record_checkpoint(record, target, None, "new", operation="write_file")
+    store.record_checkpoint(record, target, None, "new", operation="write_file")
     path = store.sessions_dir / f"{record.session_id}.json"
     data = path.read_text(encoding="utf-8").replace(
         '"path":"demo.txt"', '"path":"../outside.txt"'
