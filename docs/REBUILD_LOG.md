@@ -1724,3 +1724,5 @@ Provider readiness 被定义为“本地配置可构造”，而不是“远程�
 - 实现提交：`edf1569`
 - 提交信息：`chore(phase-10): add readiness checks and release verification`
 - 文档收口将在下一提交记录；提交将推送到阶段 10 的独立 Draft PR，不自动合并 `master`。
+
+推送后沿用仍开放的 Draft PR #4，并将标题/说明扩展为阶段 9—10。新引入的 GitHub Actions 在 Ubuntu 3.11、Ubuntu 3.13、Windows 3.11、Windows 3.13 四个组合全部通过；PR 保持 Draft、`MERGEABLE`，未合并 `master`。
