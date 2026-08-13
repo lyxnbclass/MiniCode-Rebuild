@@ -16,13 +16,20 @@ from minicode_rebuild.permissions import (
     PermissionManager,
     PermissionRequest,
 )
+from minicode_rebuild.session import (
+    RewindPlan,
+    SessionRecord,
+    SessionStatsData,
+    SessionStore,
+    format_transcript,
+)
 from minicode_rebuild.tooling import ToolContext, ToolRegistry, ToolResult
 from minicode_rebuild.tools import MUTATING_TOOLS, READ_ONLY_TOOLS
 
 
 @dataclass(frozen=True, slots=True)
 class SessionStats:
-    """Small cumulative counters that do not persist beyond this process."""
+    """Small cumulative counters that can be persisted with a session."""
 
     turns: int = 0
     model_steps: int = 0
@@ -75,7 +82,7 @@ def create_tool_registry() -> ToolRegistry:
 
 
 class AgentSession:
-    """Keep in-memory history and counters across terminal turns."""
+    """Keep history and counters, optionally persisted across processes."""
 
     def __init__(
         self,
@@ -86,6 +93,8 @@ class AgentSession:
         settings: RuntimeSettings,
         output: TextIO,
         context_manager: ContextManager | None = None,
+        session_store: SessionStore | None = None,
+        session_record: SessionRecord | None = None,
     ) -> None:
         self.model = model
         self.tools = tools
@@ -95,9 +104,73 @@ class AgentSession:
         self.context_manager = context_manager or ContextManager(
             settings.context_policy
         )
-        self.history: tuple[Message, ...] = ()
-        self.stats = SessionStats()
+        self.session_store = session_store
+        self.session_record = session_record
+        self.history = session_record.messages if session_record is not None else ()
+        self.stats = (
+            SessionStats(
+                turns=session_record.stats.turns,
+                model_steps=session_record.stats.model_steps,
+                tool_calls=session_record.stats.tool_calls,
+                input_tokens=session_record.stats.input_tokens,
+                output_tokens=session_record.stats.output_tokens,
+                compactions=session_record.stats.compactions,
+            )
+            if session_record is not None
+            else SessionStats()
+        )
         self._request_compactions = 0
+        if session_store is not None and session_record is not None:
+            self.context.state["checkpoint_recorder"] = self._record_checkpoint
+            self.context.state["checkpoint_discarder"] = self._discard_checkpoint
+
+    @property
+    def session_id(self) -> str | None:
+        return None if self.session_record is None else self.session_record.session_id
+
+    def _record_checkpoint(
+        self,
+        target: Path,
+        previous_content: str | None,
+        next_content: str,
+        operation: str,
+    ) -> str:
+        assert self.session_store is not None and self.session_record is not None
+        return self.session_store.record_checkpoint(
+            self.session_record,
+            target,
+            previous_content,
+            next_content,
+            operation=operation,
+        ).checkpoint_id
+
+    def _discard_checkpoint(self, checkpoint_id: str) -> None:
+        assert self.session_store is not None and self.session_record is not None
+        self.session_store.discard_checkpoint(self.session_record, checkpoint_id)
+
+    @staticmethod
+    def _current_turn(messages: tuple[Message, ...], user_message: str) -> tuple[Message, ...]:
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if message.role is MessageRole.USER and message.content == user_message:
+                return messages[index:]
+        return ()
+
+    def _persist(self, *, new_transcript: tuple[Message, ...] = ()) -> None:
+        if self.session_store is None or self.session_record is None:
+            return
+        self.session_record.messages = self.history
+        if new_transcript:
+            self.session_record.transcript += new_transcript
+        self.session_record.stats = SessionStatsData(
+            turns=self.stats.turns,
+            model_steps=self.stats.model_steps,
+            tool_calls=self.stats.tool_calls,
+            input_tokens=self.stats.input_tokens,
+            output_tokens=self.stats.output_tokens,
+            compactions=self.stats.compactions,
+        )
+        self.session_store.save(self.session_record)
 
     def _observe_tool(self, call: ToolCall, result: ToolResult) -> None:
         status = "ok" if result.ok else f"error ({result.error_code})"
@@ -139,6 +212,7 @@ class AgentSession:
                 + int(compaction.compacted)
             ),
         )
+        self._persist(new_transcript=self._current_turn(result.messages, user_message))
         return result
 
     def _prepare_messages(
@@ -162,7 +236,31 @@ class AgentSession:
                 output_tokens=self.stats.output_tokens,
                 compactions=self.stats.compactions + 1,
             )
+        self._persist()
         return result
+
+    def transcript(self) -> str:
+        messages = (
+            self.session_record.transcript
+            if self.session_record is not None
+            else self.history
+        )
+        return format_transcript(messages)
+
+    def list_sessions(self) -> list[SessionRecord]:
+        return [] if self.session_store is None else self.session_store.list()
+
+    def preview_rewind(self, checkpoint_id: str | None = None) -> RewindPlan:
+        if self.session_store is None or self.session_record is None:
+            raise RuntimeError("Session persistence is disabled")
+        return self.session_store.preview_rewind(self.session_record, checkpoint_id)
+
+    def apply_rewind(self, checkpoint_id: str | None = None, *, confirmed: bool) -> RewindPlan:
+        if self.session_store is None or self.session_record is None:
+            raise RuntimeError("Session persistence is disabled")
+        return self.session_store.apply_rewind(
+            self.session_record, checkpoint_id, confirmed=confirmed
+        )
 
 
 def build_session(
@@ -172,10 +270,13 @@ def build_session(
     settings: RuntimeSettings,
     output: TextIO,
     permission_prompt: Callable[[PermissionRequest], PermissionDecision] | None,
+    resume: str | None = None,
 ) -> AgentSession:
     """Assemble the default registry, permission boundary, and session."""
 
     permissions = PermissionManager(prompt=permission_prompt)
+    store = SessionStore(workspace)
+    record = store.load(resume) if resume is not None else store.create()
     return AgentSession(
         model=model,
         tools=create_tool_registry(),
@@ -183,6 +284,8 @@ def build_session(
         settings=settings,
         output=output,
         context_manager=ContextManager(settings.context_policy),
+        session_store=store,
+        session_record=record,
     )
 
 

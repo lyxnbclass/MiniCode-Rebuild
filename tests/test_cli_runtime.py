@@ -19,6 +19,7 @@ from minicode_rebuild.permissions import (
     PermissionRequest,
     RiskLevel,
 )
+from minicode_rebuild.session import SessionStore
 from minicode_rebuild.tooling import ToolContext, ToolRegistry
 
 
@@ -132,3 +133,38 @@ def test_session_automatically_compacts_at_threshold(tmp_path: Path) -> None:
         message.content.startswith("[Context summary]")
         for message in session.history
     )
+
+
+def test_persisted_session_resumes_history_stats_and_transcript(tmp_path: Path) -> None:
+    first = AgentSession(
+        model=MockModel([ModelResponse(content="First")]),
+        tools=ToolRegistry(),
+        context=ToolContext(tmp_path),
+        settings=RuntimeSettings(max_steps=3, system_prompt="Be precise"),
+        output=StringIO(),
+        session_store=SessionStore(tmp_path),
+        session_record=SessionStore(tmp_path).create(),
+    )
+    first.run("one")
+
+    restored_record = SessionStore(tmp_path).load(first.session_id or "")
+    second_model = MockModel([ModelResponse(content="Second")])
+    second = AgentSession(
+        model=second_model,
+        tools=ToolRegistry(),
+        context=ToolContext(tmp_path),
+        settings=RuntimeSettings(max_steps=3, system_prompt="Be precise"),
+        output=StringIO(),
+        session_store=SessionStore(tmp_path),
+        session_record=restored_record,
+    )
+    second.run("two")
+
+    assert second.stats.turns == 2
+    assert [message.content for message in second_model.requests[0].messages[-3:]] == [
+        "one",
+        "First",
+        "two",
+    ]
+    assert "user: one" in second.transcript()
+    assert "assistant: Second" in second.transcript()

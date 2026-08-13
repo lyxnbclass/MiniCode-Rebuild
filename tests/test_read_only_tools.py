@@ -405,6 +405,31 @@ def test_all_read_only_tools_reject_absolute_path_escape(
     assert "secret" not in result.output
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("read_file", {"path": ".minicode-rebuild/sessions/secret.json"}),
+        ("list_files", {"path": ".minicode-rebuild"}),
+        ("glob_search", {"path": ".minicode-rebuild", "pattern": "**/*"}),
+        ("grep_files", {"path": ".minicode-rebuild", "pattern": "secret"}),
+    ],
+)
+def test_read_only_tools_reject_internal_session_storage(
+    tmp_path: Path,
+    registry: ToolRegistry,
+    tool_name: str,
+    arguments: dict,
+) -> None:
+    runtime = tmp_path / ".minicode-rebuild" / "sessions"
+    runtime.mkdir(parents=True)
+    (runtime / "secret.json").write_text("secret", encoding="utf-8")
+
+    result = execute(registry, tmp_path, tool_name, arguments)
+
+    assert result.error_code == "reserved_path"
+    assert "secret" not in result.output
+
+
 def test_registry_rejects_unexpected_read_only_tool_arguments(
     tmp_path: Path, registry: ToolRegistry
 ) -> None:

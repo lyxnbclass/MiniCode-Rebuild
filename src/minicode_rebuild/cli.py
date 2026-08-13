@@ -27,6 +27,7 @@ from minicode_rebuild.core import ModelAdapter, ModelResponse, ToolCall
 from minicode_rebuild.models import MockModel
 from minicode_rebuild.models.openai_compatible import OpenAICompatibleAdapter
 from minicode_rebuild.permissions import PermissionDecision
+from minicode_rebuild.session import RewindPlan, SessionError, SessionStore
 
 EXIT_OK = 0
 EXIT_RUNTIME_ERROR = 1
@@ -86,6 +87,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-mutations",
         action="store_true",
         help="Headless only: approve mutations for this run (use with care)",
+    )
+    parser.add_argument(
+        "--resume",
+        metavar="SESSION_ID",
+        help="resume a workspace session by id, or use 'latest'",
+    )
+    parser.add_argument(
+        "--list-sessions",
+        action="store_true",
+        help="list saved sessions for the workspace and exit",
     )
     parser.add_argument(
         "--version",
@@ -183,6 +194,17 @@ def _run_headless(
     )
 
 
+def _format_rewind_plan(plan: RewindPlan) -> str:
+    lines = [f"Rewind preview: {len(plan.checkpoint_ids)} checkpoint(s)"]
+    for item in plan.files:
+        lines.append(f"[{item.action}] {item.path}")
+        if item.diff:
+            lines.append(item.diff.rstrip())
+    if plan.conflicts:
+        lines.append("Conflicts: " + ", ".join(plan.conflicts))
+    return "\n".join(lines) + "\n"
+
+
 def _run_interactive(
     *,
     session: AgentSession,
@@ -191,7 +213,9 @@ def _run_interactive(
 ) -> int:
     output.write(
         "MiniCode Rebuild interactive\n"
-        "Commands: /help, /stats, /compact, /exit\n"
+        f"Session: {session.session_id}\n"
+        "Commands: /help, /session, /sessions, /transcript, /checkpoints, "
+        "/rewind-preview [id], /rewind [id], /stats, /compact, /exit\n"
     )
     output.flush()
     while True:
@@ -208,7 +232,65 @@ def _run_interactive(
             output.write("Goodbye.\n")
             return EXIT_OK
         if user_message == "/help":
-            output.write("Commands: /help, /stats, /compact, /exit\n")
+            output.write(
+                "Commands: /help, /session, /sessions, /transcript, /checkpoints, "
+                "/rewind-preview [id], /rewind [id], /stats, /compact, /exit\n"
+            )
+            continue
+        if user_message == "/session":
+            output.write(f"Session: {session.session_id}\n")
+            continue
+        if user_message == "/sessions":
+            records = session.list_sessions()
+            if not records:
+                output.write("No saved sessions.\n")
+            for record in records:
+                active = sum(item.rewound_at is None for item in record.checkpoints)
+                output.write(
+                    f"{record.session_id} turns={record.stats.turns} checkpoints={active}\n"
+                )
+            continue
+        if user_message == "/transcript":
+            output.write((session.transcript() or "(empty transcript)") + "\n")
+            continue
+        if user_message == "/checkpoints":
+            record = session.session_record
+            active = [] if record is None else [
+                item for item in record.checkpoints if item.rewound_at is None
+            ]
+            if not active:
+                output.write("No active checkpoints.\n")
+            for item in active:
+                output.write(f"{item.checkpoint_id} {item.operation} {item.path}\n")
+            continue
+        if user_message == "/rewind-preview" or user_message.startswith("/rewind-preview "):
+            checkpoint_id = user_message[len("/rewind-preview") :].strip() or None
+            try:
+                output.write(_format_rewind_plan(session.preview_rewind(checkpoint_id)))
+            except SessionError as exc:
+                output.write(f"Session error: {exc}\n")
+            continue
+        if user_message == "/rewind" or user_message.startswith("/rewind "):
+            checkpoint_id = user_message[len("/rewind") :].strip() or None
+            try:
+                plan = session.preview_rewind(checkpoint_id)
+            except SessionError as exc:
+                output.write(f"Session error: {exc}\n")
+                continue
+            output.write(_format_rewind_plan(plan))
+            if plan.conflicts:
+                output.write("Rewind refused because conflicts exist.\n")
+                continue
+            output.write("Type yes to apply this rewind: ")
+            output.flush()
+            if input_stream.readline().strip().casefold() != "yes":
+                output.write("Rewind cancelled; no files changed.\n")
+                continue
+            try:
+                session.apply_rewind(checkpoint_id, confirmed=True)
+                output.write("Rewind applied.\n")
+            except SessionError as exc:
+                output.write(f"Session error: {exc}\n")
             continue
         if user_message == "/stats":
             output.write(f"[stats] {format_stats(session.stats)}\n")
@@ -250,6 +332,7 @@ def main(
         and not args.headless
         and not args.prompt
         and not args.demo
+        and not args.list_sessions
     ):
         parser.print_help(file=output)
         return EXIT_OK
@@ -263,10 +346,27 @@ def main(
             "Configuration error: --allow-mutations is only valid in Headless mode\n"
         )
         return EXIT_USAGE_ERROR
+    if args.list_sessions and (
+        args.prompt or args.interactive or args.headless or args.demo or args.resume
+    ):
+        error_output.write(
+            "Configuration error: --list-sessions cannot run a model request\n"
+        )
+        return EXIT_USAGE_ERROR
 
     try:
-        runtime_settings = _runtime_settings(args, env)
         workspace = _workspace(args.cwd)
+        if args.list_sessions:
+            records = SessionStore(workspace).list()
+            if not records:
+                output.write("No saved sessions.\n")
+            for record in records:
+                active = sum(item.rewound_at is None for item in record.checkpoints)
+                output.write(
+                    f"{record.session_id} turns={record.stats.turns} checkpoints={active}\n"
+                )
+            return EXIT_OK
+        runtime_settings = _runtime_settings(args, env)
         selected_model = _select_model(
             demo=args.demo,
             environment=env,
@@ -288,6 +388,7 @@ def main(
             settings=runtime_settings,
             output=output,
             permission_prompt=permission_prompt,
+            resume=args.resume,
         )
         if args.interactive:
             return _run_interactive(
@@ -303,6 +404,9 @@ def main(
         )
     except ModelConfigurationError as exc:
         error_output.write(f"Configuration error: {exc}\n")
+        return EXIT_USAGE_ERROR
+    except SessionError as exc:
+        error_output.write(f"Session error: {exc}\n")
         return EXIT_USAGE_ERROR
     except KeyboardInterrupt:
         error_output.write("\nInterrupted by user. Exiting safely.\n")

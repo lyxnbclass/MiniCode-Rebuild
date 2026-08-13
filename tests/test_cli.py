@@ -259,6 +259,76 @@ def test_interactive_mode_keeps_history_and_supports_commands(
     ]
 
 
+def test_cli_lists_and_resumes_saved_session(tmp_path: Path) -> None:
+    first_model = MockModel([ModelResponse(content="First")])
+    first_output = StringIO()
+    assert main(
+        ["--cwd", str(tmp_path), "one"],
+        environment={"OPENAI_API_KEY": "secret"},
+        stdout=first_output,
+        stderr=StringIO(),
+        model=first_model,
+    ) == 0
+    session_id = next((tmp_path / ".minicode-rebuild" / "sessions").glob("*.json")).stem
+
+    list_output = StringIO()
+    assert main(
+        ["--cwd", str(tmp_path), "--list-sessions"],
+        environment={},
+        stdout=list_output,
+        stderr=StringIO(),
+    ) == 0
+    assert session_id in list_output.getvalue()
+
+    second_model = MockModel([ModelResponse(content="Second")])
+    assert main(
+        ["--cwd", str(tmp_path), "--resume", session_id, "two"],
+        environment={"OPENAI_API_KEY": "secret"},
+        stdout=StringIO(),
+        stderr=StringIO(),
+        model=second_model,
+    ) == 0
+    assert [message.content for message in second_model.requests[0].messages[-3:]] == [
+        "one",
+        "First",
+        "two",
+    ]
+
+
+def test_interactive_rewind_requires_full_yes_confirmation(tmp_path: Path) -> None:
+    target = tmp_path / "demo.txt"
+    target.write_text("before", encoding="utf-8")
+    model = MockModel(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="write-1",
+                        name="write_file",
+                        arguments={"path": "demo.txt", "content": "after"},
+                    ),
+                )
+            ),
+            ModelResponse(content="Changed"),
+        ]
+    )
+    output = StringIO()
+
+    code = main(
+        ["--interactive", "--cwd", str(tmp_path)],
+        environment={"OPENAI_API_KEY": "secret"},
+        stdin=StringIO("change it\ny\n/rewind\nno\n/rewind\nyes\n/exit\n"),
+        stdout=output,
+        stderr=StringIO(),
+        model=model,
+    )
+
+    assert code == 0
+    assert "Rewind cancelled; no files changed." in output.getvalue()
+    assert "Rewind applied." in output.getvalue()
+    assert target.read_text(encoding="utf-8") == "before"
+
+
 def test_keyboard_interrupt_exits_safely(tmp_path: Path) -> None:
     class InterruptingInput(StringIO):
         def readline(self, *args, **kwargs):  # type: ignore[no-untyped-def]

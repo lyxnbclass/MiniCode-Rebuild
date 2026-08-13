@@ -26,11 +26,12 @@ def execute(
     name: str,
     arguments: dict,
     permissions: PermissionManager | None = None,
+    state: dict[str, object] | None = None,
 ) -> ToolResult:
     return registry.execute(
         name,
         arguments,
-        ToolContext(workspace, permissions=permissions),
+        ToolContext(workspace, state=state or {}, permissions=permissions),
     )
 
 
@@ -185,6 +186,90 @@ def test_write_file_atomic_replace_failure_preserves_original_and_cleans_temp(
     assert not list(tmp_path.glob(".demo.txt.*.tmp"))
 
 
+def test_checkpoint_is_recorded_after_permission_and_before_write(
+    tmp_path: Path, registry: ToolRegistry
+) -> None:
+    target = tmp_path / "demo.txt"
+    target.write_text("before", encoding="utf-8")
+    events: list[str] = []
+
+    def record(path: Path, previous: str | None, current: str, operation: str) -> str:
+        assert path == target.resolve()
+        assert previous == "before"
+        assert current == "after"
+        assert operation == "write_file"
+        assert target.read_text(encoding="utf-8") == "before"
+        events.append("checkpoint")
+        return "checkpoint-1"
+
+    result = execute(
+        registry,
+        tmp_path,
+        "write_file",
+        {"path": "demo.txt", "content": "after"},
+        allow_once(),
+        {"checkpoint_recorder": record},
+    )
+
+    assert result.ok is True
+    assert events == ["checkpoint"]
+    assert target.read_text(encoding="utf-8") == "after"
+
+
+def test_denial_and_noop_do_not_record_checkpoint(
+    tmp_path: Path, registry: ToolRegistry
+) -> None:
+    target = tmp_path / "demo.txt"
+    target.write_text("same", encoding="utf-8")
+    record = lambda *_args: pytest.fail("checkpoint must not be recorded")
+
+    noop = execute(
+        registry,
+        tmp_path,
+        "write_file",
+        {"path": "demo.txt", "content": "same"},
+        allow_once(),
+        {"checkpoint_recorder": record},
+    )
+    denied = execute(
+        registry,
+        tmp_path,
+        "write_file",
+        {"path": "demo.txt", "content": "changed"},
+        PermissionManager(prompt=lambda _request: PermissionDecision.DENY),
+        {"checkpoint_recorder": record},
+    )
+
+    assert noop.ok is True
+    assert denied.error_code == "permission_denied"
+
+
+def test_failed_write_discards_checkpoint(
+    tmp_path: Path,
+    registry: ToolRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "demo.txt"
+    target.write_text("before", encoding="utf-8")
+    discarded: list[str] = []
+    monkeypatch.setattr(file_changes.os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("boom")))
+
+    result = execute(
+        registry,
+        tmp_path,
+        "write_file",
+        {"path": "demo.txt", "content": "after"},
+        allow_once(),
+        {
+            "checkpoint_recorder": lambda *_args: "checkpoint-1",
+            "checkpoint_discarder": discarded.append,
+        },
+    )
+
+    assert result.error_code == "write_error"
+    assert discarded == ["checkpoint-1"]
+
+
 def test_write_file_session_permission_is_scoped_to_exact_file(
     tmp_path: Path, registry: ToolRegistry
 ) -> None:
@@ -234,6 +319,21 @@ def test_git_metadata_write_is_critical_risk(
 
     assert result.ok is True
     assert requests[0].risk is RiskLevel.CRITICAL
+
+
+def test_write_tool_cannot_modify_internal_session_storage(
+    tmp_path: Path, registry: ToolRegistry
+) -> None:
+    result = execute(
+        registry,
+        tmp_path,
+        "write_file",
+        {"path": ".minicode-rebuild/sessions/fake.json", "content": "bad"},
+        allow_once(),
+    )
+
+    assert result.error_code == "reserved_path"
+    assert not (tmp_path / ".minicode-rebuild").exists()
 
 
 @pytest.mark.parametrize("path", ["../outside.txt"])

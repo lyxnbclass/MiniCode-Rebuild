@@ -31,6 +31,7 @@ _SKIP_DIRS = frozenset(
         ".git",
         ".hg",
         ".mypy_cache",
+        ".minicode-rebuild",
         ".pytest_cache",
         ".ruff_cache",
         ".svn",
@@ -50,7 +51,14 @@ def _resolve(
     context: ToolContext, input_path: str
 ) -> tuple[Path | None, ToolResult | None]:
     try:
-        return resolve_workspace_path(context.cwd, input_path), None
+        target = resolve_workspace_path(context.cwd, input_path)
+        relative = target.relative_to(context.cwd.resolve())
+        if relative.parts and relative.parts[0].casefold() == ".minicode-rebuild":
+            return None, ToolResult.error(
+                "reserved_path",
+                "The .minicode-rebuild runtime directory is managed internally.",
+            )
+        return target, None
     except WorkspacePathError as exc:
         return None, ToolResult.error(exc.error_code, str(exc))
 
