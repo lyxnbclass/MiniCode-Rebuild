@@ -8,12 +8,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前阶段 | 阶段 8：会话、Checkpoint 与 Rewind（待开始） |
-| 最近完成 | 阶段 7：上下文预算与压缩 |
+| 当前阶段 | 阶段 9：记忆与检索（待开始） |
+| 最近完成 | 阶段 8：会话、Checkpoint 与 Rewind |
 | 当前分支 | `rebuild/minicode-learning` |
-| 最新阶段实现提交 | `2bf4bfa feat(phase-07): add context compaction` |
-| 测试状态 | 阶段 7 相关测试 `66 passed`；全量回归 `204 passed, 2 skipped` |
-| 下一步 | 分析阶段 8 的会话持久化、Checkpoint、预览与恢复边界 |
+| 最新阶段实现提交 | `b4afec3 feat(phase-08): add sessions checkpoints and rewind` |
+| 测试状态 | 阶段 8 相关测试 `93 passed, 1 skipped`；全量回归 `224 passed, 2 skipped` |
+| 下一步 | 分析阶段 9 的记忆提取、存储、检索与注入边界 |
 
 ## 总体架构
 
@@ -1476,3 +1476,111 @@ passed
 - 远程状态：实现提交已推送至 `origin/rebuild/minicode-learning`，并进入 Draft PR #3。
 
 阶段 8 将把当前内存历史与统计设计为可校验的会话持久化格式，并在文件变更前记录 Checkpoint，提供 transcript、恢复列表、rewind preview 和明确确认后的恢复操作。
+
+## 阶段 8：会话、Checkpoint 与 Rewind
+
+### 1. 阶段目标与非目标
+
+- 将对话消息、工具调用、统计与文件 Checkpoint 原子保存到工作区的 `.minicode-rebuild/sessions/`。
+- 支持列出会话、按 ID 恢复，以及在进程重启后继续使用原历史。
+- 由同一份规范化消息生成 transcript，保留 assistant 工具调用及对应 tool result。
+- 在获得写权限之后、真正修改 UTF-8 文件之前持久化 Checkpoint；写入失败时撤销无效 Checkpoint。
+- Rewind 先计算预览；只有再次明确确认才恢复。若当前文件已被外部修改，则拒绝覆盖。
+- 本阶段只覆盖内置 `write_file`、`edit_file` 和 `patch_file` 的可逆 UTF-8 文件变更；任意 shell 命令可能产生的副作用不能可靠推导，因此不声称可由 Rewind 恢复。
+- 不实现云同步、跨工作区恢复、二进制文件版本库、Git 替代品或自动定时保存线程。
+
+### 2. 参考分析与取舍
+
+| 参考项 | 路径 | 可复用认识 | 本项目取舍 |
+|---|---|---|---|
+| MiniCode 会话模块 | `D:\code\MiniCode-Python\minicode\session.py` | 会话列表应使用轻量元数据；Checkpoint 要记录文件是否原先存在及旧内容；恢复应按新到旧执行 | 阶段 8 使用单文件原子 JSON，避免提前引入增量 delta、全局索引和后台 autosave |
+| MiniCode 本地命令 | `D:\code\MiniCode-Python\minicode\cli_commands.py` | `/sessions`、`/checkpoints`、`/rewind-preview` 与 `/rewind` 应拆分，让检查和执行边界可见 | 为当前行式 CLI 提供更小的命令集，并在 `/rewind` 中要求输入完整 `yes` |
+| 当前原子写入边界 | `src/minicode_rebuild/file_changes.py` | 权限通过之后才能产生副作用；临时文件与 `os.replace` 已提供原子文件更新 | Checkpoint 钩子放在授权之后、临时文件创建之前；Checkpoint 保存失败则中止原写入 |
+
+### 3. 实现前设计
+
+- `SessionStore` 只接受当前工作区，并校验 schema 版本、会话 ID、记录中的 workspace 和所有恢复路径；损坏或跨工作区记录不能静默恢复。
+- 每次保存写入同目录临时文件，执行 `fsync` 后用 `os.replace` 原子替换；会话 JSON 不进入 Git。
+- `AgentSession` 在每轮完成和手动压缩后保存规范化历史与累计统计；恢复时重建 `Message`、`ToolCall` 和统计对象。
+- 文件 Checkpoint 保存相对路径、旧内容、文件原先是否存在、操作名和“修改后内容”哈希。该哈希用于发现 Agent 之后的外部编辑。
+- 同一文件连续修改时，Rewind 按 Checkpoint 从新到旧模拟与执行；选择较早 Checkpoint 会连同它之后的变更一起恢复，避免跳过中间状态。
+- `preview_rewind()` 只读取文件并生成最终 unified diff，不写磁盘；`apply_rewind(..., confirmed=False)` 必须拒绝。
+- CLI 使用 `--resume <session-id|latest>` 恢复；交互模式提供 `/session`、`/sessions`、`/transcript`、`/checkpoints`、`/rewind-preview [id]` 和 `/rewind [id]`。
+
+### 4. 验收测试计划
+
+- 会话 JSON 能跨 `SessionStore` 实例保存和加载消息、工具调用、统计；损坏、未知 schema、非法 ID 和跨工作区记录被拒绝。
+- 列表按更新时间排序，`latest` 能恢复最近会话；恢复后的下一次模型请求包含旧历史。
+- transcript 明确显示用户、assistant、工具名、调用 ID、参数与工具结果。
+- 权限拒绝和 no-op 不创建 Checkpoint；获批写入前已存在可加载 Checkpoint；底层写入失败会清理它。
+- 预览不修改文件；未确认执行被拒绝；确认后可以恢复旧内容或删除本次新建文件。
+- 当前内容哈希不匹配时预览标记冲突，执行恢复拒绝覆盖。
+- CLI 列表、恢复、历史显示和二次确认路径均有端到端测试。
+
+### 5. 实现内容与数据流
+
+| 文件 | 作用 |
+|---|---|
+| `src/minicode_rebuild/session.py` | schema 化 JSON 持久化、消息序列化、transcript、Checkpoint、预览、冲突检测与原子恢复 |
+| `src/minicode_rebuild/file_changes.py` | 在权限通过后、原子写入前调用 Checkpoint；失败时撤销无效记录；保护内部运行目录 |
+| `src/minicode_rebuild/tools/read_only.py` | 阻止模型读取会话内部目录，并从搜索遍历中忽略它 |
+| `src/minicode_rebuild/cli_runtime.py` | 创建或恢复会话、保存历史与统计、保留完整 transcript、向文件工具注入 Checkpoint 钩子 |
+| `src/minicode_rebuild/cli.py` | `--list-sessions`、`--resume` 及交互式会话、transcript、Checkpoint 和 Rewind 命令 |
+
+每轮完成后，压缩后的 `history` 作为下一轮工作上下文保存，当前轮的原始消息同时追加到独立 `transcript`。因此恢复不会绕过阶段 7 的上下文预算，而历史工具调用仍可完整审计。
+
+内置文件变更的数据流如下：权限确认 → 原子保存包含旧内容和修改后哈希的 Checkpoint → 原子写文件 → 若写入失败则移除该 Checkpoint。Rewind 会从目标 Checkpoint 起按时间倒序语义合并每个文件的最终旧状态，先比较当前哈希，再生成 current-to-rewind diff；只有 CLI 再次收到完整 `yes` 才执行。
+
+### 6. 安全审核与边界
+
+- 会话 ID 只接受 32 位小写十六进制，文件名无法构造目录穿越。
+- 读取时校验 schema、workspace、非负统计、Checkpoint ID、SHA-256 和恢复路径；损坏记录不会参与列表或恢复。
+- `.minicode-rebuild` 已加入 `.gitignore`，内置读写工具均拒绝直接访问，防止模型读取 transcript 或篡改恢复证据。
+- 保存会话与恢复旧内容均通过同目录临时文件、`fsync` 和 `os.replace`；恢复已有文件时保留权限位。
+- 外部修改会造成哈希冲突，预览明确列出，执行拒绝覆盖。
+- Rewind 不覆盖 `run_command` 的副作用，也不支持二进制文件；这是阶段 8 明确公开的恢复范围。
+
+### 7. 测试、审核与 Git 记录
+
+测试先行红灯为：
+
+```text
+ModuleNotFoundError: No module named 'minicode_rebuild.session'
+```
+
+完成实现和安全复审后的真实验证：
+
+```text
+python -m pytest tests/test_session.py tests/test_write_tools.py tests/test_read_only_tools.py tests/test_cli_runtime.py tests/test_cli.py -q
+93 passed, 1 skipped
+
+python -m pytest -q -rs
+224 passed, 2 skipped
+
+python -m compileall -q src tests
+passed
+
+git diff --check
+passed
+```
+
+跳过项仍是 Windows 环境缺少创建符号链接的权限，和本阶段功能无关。阶段 7 审核也在开发前重新执行：`204 passed, 2 skipped`，PR #3 为 OPEN、Draft、MERGEABLE 且无失败检查。
+
+- 分支：`rebuild/minicode-learning`
+- 实现提交：`b4afec3 feat(phase-08): add sessions checkpoints and rewind`
+- 发布目标：继续更新 Draft PR #3；提交前保持 `.phase4-work/` 未跟踪且未暂存。
+
+### 8. 阶段验收
+
+- [x] 进程重启后可以按 ID 或 `latest` 恢复历史与累计统计。
+- [x] `/sessions` 和 `--list-sessions` 可列出当前工作区会话。
+- [x] `/transcript` 可查看完整用户、assistant、工具调用参数和工具结果。
+- [x] 内置 UTF-8 文件工具在真正修改前持久化 Checkpoint。
+- [x] Rewind preview 不修改文件，并显示恢复或删除范围及 diff。
+- [x] 未完整输入 `yes` 前不执行恢复。
+- [x] 外部修改冲突、损坏会话和跨工作区数据均安全拒绝。
+- [x] 阶段测试、全量回归、编译与 diff 检查通过。
+
+### 9. 下一阶段
+
+阶段 9 将在持久化会话之上增加可解释的记忆提取与检索，但不会把完整 transcript 无筛选地注入模型。开始前需要定义记忆来源、去重、相关性、时效性、工作区隔离和用户可见的删除边界。

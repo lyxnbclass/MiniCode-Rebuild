@@ -4,7 +4,7 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 
 ## 当前状态
 
-阶段 0“仓库初始化与工程基线”至阶段 7“上下文预算与压缩”已经完成。
+阶段 0“仓库初始化与工程基线”至阶段 8“会话、Checkpoint 与 Rewind”已经完成。
 
 目前已经具备：
 
@@ -30,9 +30,12 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 - 估算中英文与工具协议的上下文 token，按阈值自动压缩旧轮次；
 - 定向裁剪超长工具结果，保留头尾证据和结构化元数据；
 - 使用 `/compact` 手动压缩，并在摘要器失败时回退到本地摘要；
+- 在工作区内持久化会话、统计和完整 transcript，并支持跨进程恢复；
+- 在内置文件工具修改前记录 Checkpoint，先预览、再确认 Rewind；
+- 使用修改后哈希阻止 Rewind 覆盖 Agent 之后发生的外部编辑；
 - 执行自动化测试。
 
-真实模型适配器、工具注册表、安全工作区工具、Agent Loop 和上下文管理已经接入 CLI。阶段 8 将继续加入会话持久化、Checkpoint 与 Rewind。
+真实模型适配器、工具注册表、安全工作区工具、Agent Loop、上下文管理和会话恢复已经接入 CLI。下一阶段将继续扩展记忆与检索能力。
 
 ## 环境要求
 
@@ -127,9 +130,19 @@ minicode-rebuild "分析当前项目结构"
 minicode-rebuild --interactive
 ```
 
-交互模式提供 `/help`、`/stats`、`/compact` 和 `/exit`。写文件和运行命令会显示风险与操作详情，并要求选择一次允许、会话允许或拒绝。Headless 模式默认拒绝所有变更；只有明确传入 `--allow-mutations` 才会在本次运行内逐项自动批准，并在标准错误输出警告。
+列出当前工作区保存的会话，或恢复最近一次会话：
 
-每轮会输出模型步数、工具次数、模型返回的 token 用量和压缩次数。上下文估算是跨 Provider 的保守启发式，不等同于服务端精确 tokenizer；工具结果会优先裁剪，旧轮次按用户输入边界摘要，并始终保留最近完整轮次和主系统提示。当前历史与统计仍只存在于进程内，会话持久化属于阶段 8。
+```powershell
+minicode-rebuild --list-sessions
+minicode-rebuild --interactive --resume latest
+minicode-rebuild --resume <session-id> "继续上次任务"
+```
+
+交互模式提供 `/help`、`/session`、`/sessions`、`/transcript`、`/checkpoints`、`/rewind-preview [checkpoint-id]`、`/rewind [checkpoint-id]`、`/stats`、`/compact` 和 `/exit`。`/rewind` 总会先显示预览，只有随后完整输入 `yes` 才修改文件；发现 Agent 写入后又有外部修改时会拒绝覆盖。
+
+会话 JSON 位于工作区 `.minicode-rebuild/sessions/`，已从 Git 与内置文件工具中隔离。Checkpoint 只覆盖 `write_file`、`edit_file` 和 `patch_file` 的 UTF-8 文件变更；`run_command` 的任意副作用不在 Rewind 范围内。写文件和运行命令仍会显示风险与操作详情，并要求选择一次允许、会话允许或拒绝。Headless 模式默认拒绝所有变更；只有明确传入 `--allow-mutations` 才会在本次运行内逐项自动批准，并在标准错误输出警告。
+
+每轮会输出模型步数、工具次数、模型返回的 token 用量和压缩次数。上下文估算是跨 Provider 的保守启发式，不等同于服务端精确 tokenizer；工具结果会优先裁剪，旧轮次按用户输入边界摘要，并始终保留最近完整轮次和主系统提示。会话恢复加载的是受预算约束的工作历史，`/transcript` 则保留完整、未压缩的用户消息、assistant 工具调用和工具结果。
 
 最小的库调用边界如下：
 
