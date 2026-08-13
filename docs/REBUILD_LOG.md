@@ -1645,4 +1645,5 @@ Skill frontmatter 只解析本阶段所需的单行 `name` 与 `description`，�
 - 分支：`rebuild/minicode-learning`
 - 实现提交：`6201245`
 - 提交信息：`feat(phase-09): add skills and lifecycle hooks`
-- 文档收口将在下一提交记录，随后一起推送到现有 Draft PR #3；未合并 `master`。
+- 文档收口提交：`28e5dc9 docs(phase-09): mark phase complete`。
+- 推送前复核发现 PR #3 已由用户合并至 `master`；阶段 9 提交位于其后的开发分支，将单独进入新的 Draft PR，不自动合并 `master`。
