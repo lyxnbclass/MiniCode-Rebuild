@@ -11,7 +11,7 @@
 | 当前阶段 | 阶段 11：可选高级能力（待选择） |
 | 最近完成 | 阶段 10：可观测性、质量与发布准备 |
 | 当前分支 | `rebuild/minicode-learning` |
-| 最新阶段实现提交 | `6201245 feat(phase-09): add skills and lifecycle hooks` |
+| 最新阶段实现提交 | `edf1569 chore(phase-10): add readiness checks and release verification` |
 | 测试状态 | 阶段 10 相关测试 `37 passed`；全量回归 `244 passed, 2 skipped`；分支覆盖率 `85.08%` |
 | 下一步 | 从阶段 11 清单中选择一个独立高级能力，不打包推进 |
 
@@ -1717,3 +1717,10 @@ Provider readiness 被定义为“本地配置可构造”，而不是“远程�
 第一次把隔离构建直接放进一键脚本时，沙箱环境无法下载临时 build requirements；改为 `--no-isolation` 后又发现项目 dev 环境未显式安装 setuptools/wheel。将二者加入 `.[dev]` 后，重复写已有 `dist` 文件在 Windows 触发访问拒绝。最终门禁为每次构建创建新的临时输出目录，既不依赖临时联网，也不覆盖旧产物。
 
 此外使用全新 `.verify-venv` 从生成的 wheel 执行 `pip --no-index` 安装，`minicode-rebuild --version` 和 `--demo` 均成功，证明控制台入口和运行时依赖没有依赖 editable checkout。验证目录与构建产物已清理，未进入 Git。
+
+### 9. Git 记录
+
+- 分支：`rebuild/minicode-learning`
+- 实现提交：`edf1569`
+- 提交信息：`chore(phase-10): add readiness checks and release verification`
+- 文档收口将在下一提交记录；提交将推送到阶段 10 的独立 Draft PR，不自动合并 `master`。
