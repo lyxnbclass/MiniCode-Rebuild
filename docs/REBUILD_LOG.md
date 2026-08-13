@@ -11,8 +11,8 @@
 | 当前阶段 | 阶段 10：可观测性、质量与发布准备（待开始） |
 | 最近完成 | 阶段 9：Skills、Hooks 与扩展机制 |
 | 当前分支 | `rebuild/minicode-learning` |
-| 最新阶段实现提交 | `b4afec3 feat(phase-08): add sessions checkpoints and rewind` |
-| 测试状态 | 阶段 8 相关测试 `93 passed, 1 skipped`；全量回归 `224 passed, 2 skipped` |
+| 最新阶段实现提交 | `6201245 feat(phase-09): add skills and lifecycle hooks` |
+| 测试状态 | 阶段 9 相关测试 `98 passed, 1 skipped`；全量回归 `234 passed, 2 skipped` |
 | 下一步 | 完成结构化日志、运行时间线、Provider readiness、质量门禁与安装演示 |
 
 ## 总体架构
@@ -1632,10 +1632,17 @@ passed
 - [x] 核心 Agent Loop 未反向依赖扩展模块。
 - [x] MCP 明确延后为独立阶段。
 
-阶段相关测试覆盖 Skills 扫描/加载/隔离、Hook 顺序/失败/工具边界、系统提示渐进注入和终端错误展示。全量测试、`compileall` 与 `git diff --check` 在提交前重新执行并记录真实结果。
+阶段相关测试覆盖 Skills 扫描/加载/隔离、Hook 顺序/失败/工具边界、系统提示渐进注入和终端错误展示。阶段相关回归为 `98 passed, 1 skipped`，全量回归为 `234 passed, 2 skipped`；两个 skip 均为 Windows 当前环境无法创建符号链接。`python -m compileall -q src tests` 与 `git diff --check` 通过。
 
 ### 6. 风险、限制与下一阶段
 
 Skill frontmatter 只解析本阶段所需的单行 `name` 与 `description`，不是通用 YAML；损坏或过大的 Skill 在扫描中跳过，显式加载时返回错误。同步 Hook 应保持快速，阶段 10 将通过时间线与结构化日志提高耗时可见性。Hook 注册是编程接口，不是面向不可信项目代码的自动插件系统。
 
 阶段 10 将完成可观测性、质量与发布准备，包括结构化日志、运行时间线、Provider readiness、lint/type check、安装验证、跨平台说明、演示脚本与发布检查清单。
+
+### 7. Git 记录
+
+- 分支：`rebuild/minicode-learning`
+- 实现提交：`6201245`
+- 提交信息：`feat(phase-09): add skills and lifecycle hooks`
+- 文档收口将在下一提交记录，随后一起推送到现有 Draft PR #3；未合并 `master`。
