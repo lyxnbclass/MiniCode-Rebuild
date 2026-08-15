@@ -69,9 +69,13 @@ def apply_file_change(
 
     assessment = classify_file_risk(target, existed=existed)
     relative = _relative(target, context)
-    if relative.split("/", 1)[0].casefold() == ".minicode-rebuild":
+    if relative.split("/", 1)[0].casefold() in {
+        ".minicode-rebuild",
+        ".minicode",
+    }:
         return ToolResult.error(
-            "reserved_path", "The .minicode-rebuild runtime directory is managed internally."
+            "reserved_path",
+            "The requested runtime or extension directory is managed internally.",
         )
     request = PermissionRequest(
         operation=operation,

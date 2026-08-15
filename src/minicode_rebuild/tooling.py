@@ -7,11 +7,12 @@ from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Self, TypeAlias
+from typing import TYPE_CHECKING, Self, TypeAlias, cast
 
 from minicode_rebuild.core import JsonValue, ModelTool
 
 if TYPE_CHECKING:
+    from minicode_rebuild.hooks import HookManager, HookObserver
     from minicode_rebuild.permissions import PermissionManager
 
 ToolHandler: TypeAlias = Callable[
@@ -44,6 +45,8 @@ class ToolContext:
     cwd: Path
     state: MutableMapping[str, object] = field(default_factory=dict)
     permissions: "PermissionManager | None" = None
+    hooks: "HookManager | None" = None
+    hook_observer: "HookObserver | None" = None
 
     def __post_init__(self) -> None:
         self.cwd = Path(self.cwd)
@@ -200,12 +203,18 @@ class ToolRegistry:
             )
 
         safe_arguments = deepcopy(dict(arguments))
+        self._emit_hook(
+            context,
+            "BEFORE_TOOL",
+            tool_name=tool.name,
+            arguments=safe_arguments,
+        )
         try:
             result = tool.handler(safe_arguments, context)
         except Exception as exc:
             detail = str(exc)
             suffix = f": {detail}" if detail else ""
-            return self._finalize(
+            result = self._finalize(
                 ToolResult.error(
                     "execution_error",
                     f"Error running tool '{tool.name}': "
@@ -213,9 +222,11 @@ class ToolRegistry:
                 ),
                 limit,
             )
+            self._emit_after_tool(context, tool.name, result)
+            return result
 
         if not isinstance(result, ToolResult):
-            return self._finalize(
+            result = self._finalize(
                 ToolResult.error(
                     "invalid_result",
                     f"Tool '{tool.name}' must return ToolResult, "
@@ -223,7 +234,37 @@ class ToolRegistry:
                 ),
                 limit,
             )
-        return self._finalize(result, limit)
+            self._emit_after_tool(context, tool.name, result)
+            return result
+        result = self._finalize(result, limit)
+        self._emit_after_tool(context, tool.name, result)
+        return result
+
+    @staticmethod
+    def _emit_hook(context: ToolContext, event_name: str, **data: object) -> None:
+        if context.hooks is None:
+            return
+        from minicode_rebuild.hooks import HookEvent
+
+        report = context.hooks.emit(HookEvent[event_name], **data)
+        if context.hook_observer is not None:
+            context.hook_observer(report)
+
+    @classmethod
+    def _emit_after_tool(
+        cls, context: ToolContext, tool_name: str, result: ToolResult
+    ) -> None:
+        cls._emit_hook(
+            context,
+            "AFTER_TOOL",
+            tool_name=tool_name,
+            result={
+                "ok": result.ok,
+                "output": result.output,
+                "error_code": result.error_code,
+                "truncated": result.truncated,
+            },
+        )
 
     @staticmethod
     def _finalize(result: ToolResult, limit: int) -> ToolResult:
@@ -328,7 +369,7 @@ def _validate_size_bounds(
             isinstance(value, bool) or not isinstance(value, int) or value < 0
         ):
             raise ValueError(f"{path}.{label} must be a non-negative integer")
-    if minimum is not None and maximum is not None and minimum > maximum:
+    if isinstance(minimum, int) and isinstance(maximum, int) and minimum > maximum:
         raise ValueError(f"{path} minimum size must not exceed maximum size")
 
 
@@ -342,7 +383,13 @@ def _validate_number_bounds(schema: Mapping[str, JsonValue], path: str) -> None:
             or not _is_finite_number(value)
         ):
             raise ValueError(f"{path}.{label} must be a finite number")
-    if minimum is not None and maximum is not None and minimum > maximum:
+    if (
+        isinstance(minimum, (int, float))
+        and not isinstance(minimum, bool)
+        and isinstance(maximum, (int, float))
+        and not isinstance(maximum, bool)
+        and minimum > maximum
+    ):
         raise ValueError(f"{path}.minimum must not exceed maximum")
 
 
@@ -354,7 +401,7 @@ def _validate_value(
         raise ToolValidationError(f"{path} must be {schema_type}")
 
     enum = schema.get("enum")
-    if enum is not None and value not in enum:
+    if isinstance(enum, list) and cast(JsonValue, value) not in enum:
         raise ToolValidationError(f"{path} must be one of the allowed values")
 
     if schema_type == "object":

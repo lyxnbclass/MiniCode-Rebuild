@@ -13,6 +13,7 @@ from minicode_rebuild.cli_runtime import (
 from minicode_rebuild.config import RuntimeSettings
 from minicode_rebuild.context import ContextManager, ContextPolicy
 from minicode_rebuild.core import ModelResponse, TokenUsage
+from minicode_rebuild.hooks import HookEvent, HookManager
 from minicode_rebuild.models import MockModel
 from minicode_rebuild.permissions import (
     PermissionDecision,
@@ -20,6 +21,7 @@ from minicode_rebuild.permissions import (
     RiskLevel,
 )
 from minicode_rebuild.session import SessionStore
+from minicode_rebuild.skills import SkillCatalog
 from minicode_rebuild.tooling import ToolContext, ToolRegistry
 
 
@@ -168,3 +170,51 @@ def test_persisted_session_resumes_history_stats_and_transcript(tmp_path: Path) 
     ]
     assert "user: one" in second.transcript()
     assert "assistant: Second" in second.transcript()
+
+
+def test_session_injects_skill_catalog_but_not_full_content(tmp_path: Path) -> None:
+    skill_path = tmp_path / ".minicode" / "skills" / "review" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text(
+        "---\nname: review\ndescription: Review changes.\n---\n\nPRIVATE STEPS",
+        encoding="utf-8",
+    )
+    model = MockModel([ModelResponse(content="Done")])
+    session = AgentSession(
+        model=model,
+        tools=ToolRegistry(),
+        context=ToolContext(tmp_path),
+        settings=RuntimeSettings(max_steps=3, system_prompt="Be precise"),
+        output=StringIO(),
+        skill_catalog=SkillCatalog(tmp_path),
+    )
+
+    session.run("review")
+
+    prompt = model.requests[0].messages[0].content
+    assert "Be precise" in prompt
+    assert "review: Review changes." in prompt
+    assert "PRIVATE STEPS" not in prompt
+
+
+def test_session_lifecycle_hook_failure_is_visible_and_nonfatal(tmp_path: Path) -> None:
+    hooks = HookManager()
+    hooks.register(
+        HookEvent.AGENT_START,
+        lambda context: (_ for _ in ()).throw(RuntimeError("observer failed")),
+        name="broken",
+    )
+    output = StringIO()
+    session = AgentSession(
+        model=MockModel([ModelResponse(content="Still works")]),
+        tools=ToolRegistry(),
+        context=ToolContext(tmp_path),
+        settings=RuntimeSettings(max_steps=3),
+        output=output,
+        hooks=hooks,
+    )
+
+    result = session.run("hello")
+
+    assert result.content == "Still works"
+    assert "[hook:error] agent_start/broken: RuntimeError: observer failed" in output.getvalue()

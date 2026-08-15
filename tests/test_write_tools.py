@@ -221,7 +221,8 @@ def test_denial_and_noop_do_not_record_checkpoint(
 ) -> None:
     target = tmp_path / "demo.txt"
     target.write_text("same", encoding="utf-8")
-    record = lambda *_args: pytest.fail("checkpoint must not be recorded")
+    def record(*_args):  # type: ignore[no-untyped-def]
+        pytest.fail("checkpoint must not be recorded")
 
     noop = execute(
         registry,

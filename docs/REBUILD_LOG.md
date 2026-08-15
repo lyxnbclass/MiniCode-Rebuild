@@ -8,12 +8,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前阶段 | 阶段 9：记忆与检索（待开始） |
-| 最近完成 | 阶段 8：会话、Checkpoint 与 Rewind |
+| 当前阶段 | 阶段 11：可选高级能力（待选择） |
+| 最近完成 | 阶段 10：可观测性、质量与发布准备 |
 | 当前分支 | `rebuild/minicode-learning` |
-| 最新阶段实现提交 | `b4afec3 feat(phase-08): add sessions checkpoints and rewind` |
-| 测试状态 | 阶段 8 相关测试 `93 passed, 1 skipped`；全量回归 `224 passed, 2 skipped` |
-| 下一步 | 分析阶段 9 的记忆提取、存储、检索与注入边界 |
+| 最新阶段实现提交 | `edf1569 chore(phase-10): add readiness checks and release verification` |
+| 测试状态 | 阶段 10 相关测试 `37 passed`；全量回归 `244 passed, 2 skipped`；分支覆盖率 `85.08%` |
+| 下一步 | 从阶段 11 清单中选择一个独立高级能力，不打包推进 |
 
 ## 总体架构
 
@@ -1583,4 +1583,146 @@ passed
 
 ### 9. 下一阶段
 
-阶段 9 将在持久化会话之上增加可解释的记忆提取与检索，但不会把完整 transcript 无筛选地注入模型。开始前需要定义记忆来源、去重、相关性、时效性、工作区隔离和用户可见的删除边界。
+阶段 9 按主执行规范实现 Skills、Hooks 与扩展机制。长期记忆与检索仍属于阶段 11 的可选高级能力，不在基础能力稳定前提前实现。
+
+## 阶段 9：Skills、Hooks 与扩展机制
+
+### 1. 阶段目标与非目标
+
+- 扫描工作区 `.minicode/skills/<name>/SKILL.md`，提供可解释的名称、描述和路径。
+- 系统提示只注入有界目录；完整 Skill 正文由 `load_skill` 工具按名称、按需加载。
+- 提供 Agent 开始/停止、会话创建/恢复/保存和工具执行前/后的同步生命周期 Hook。
+- Hook 普通异常必须隔离、记录并对终端用户可见，不能静默改变主流程结果。
+- 不从磁盘自动执行 Hook 脚本，不加载 Python 插件，不给予 Hook 额外权限，不实现 MCP。
+
+### 2. 参考分析与取舍
+
+参考 `D:\code\MiniCode-Python\minicode\skills.py`、`tools/load_skill.py` 与 `hooks.py`。参考实现同时扫描用户级和兼容目录，并支持异步/外部脚本 Hook；本阶段缩小为工作区单一来源和进程内同步注册，避免用户主目录隐式输入、脚本执行与事件循环复杂度。Skills 采用渐进加载：发现阶段读取文件以提取元数据，但不把正文放入模型请求；只有模型明确调用 `load_skill` 才返回单个正文。
+
+### 3. 模块与扩展边界
+
+- `skills.py`：安全名称、128 KiB 单文件上限、100 个目录上限、UTF-8 校验、frontmatter 名称一致性和 workspace realpath 守卫。
+- `tools/skills.py`：唯一模型可见的 `load_skill` 入口；未知、越界或损坏 Skill 返回稳定 `skill_error`。
+- `hooks.py`：无全局单例的 `HookManager`、只读深拷贝 `HookContext`、`HookReport` 与明确失败列表。
+- `ToolRegistry`：在已完成参数校验后触发 `before_tool`，工具结束或普通执行异常规范化后触发 `after_tool`；Hook 不修改参数或结果。
+- `AgentSession`：负责生命周期事件、技能目录系统提示、Hook 错误终端展示；核心 `run_agent_turn()` 未依赖 Skills 或 Hooks。
+
+`.minicode` 与 `.minicode-rebuild` 一样被内置通用读写/搜索工具保留。模型只能通过受限 `load_skill` 阅读 Skill，不能用 `read_file` 绕过按需加载，也不能通过写工具篡改运行中指令。Hooks 仅能由可信 Python 装配层显式注册，未引入自动发现或任意代码执行。
+
+### 4. Hook 事件契约
+
+| 事件 | 触发位置 | 可见数据 |
+|---|---|---|
+| `session_create` / `session_resume` | 默认会话装配完成 | session ID |
+| `agent_start` | 每个用户轮次进入循环前 | session ID、用户输入 |
+| `before_tool` | 工具存在且参数 schema 验证通过后 | 工具名、参数深拷贝 |
+| `after_tool` | 工具结果完成规范化与截断后 | 工具名、结构化结果 |
+| `session_save` | 会话原子保存成功后 | session ID |
+| `agent_stop` | 结果保存完成后 | stop reason、completed |
+
+未知工具和参数验证失败不会触发工具 Hook，因为没有进入具体工具执行边界。`KeyboardInterrupt` 与 `SystemExit` 等 `BaseException` 继续传播，避免 Hook 或工具吞掉进程控制信号。
+
+### 5. 验收与验证
+
+- [x] 可发现有效 `SKILL.md`，系统提示只包含名称和描述。
+- [x] `load_skill` 每次只加载显式命名的单个正文。
+- [x] 目录穿越、frontmatter 名称不一致、越界路径和保留目录通用访问被拒绝。
+- [x] Agent、会话和工具生命周期事件可由嵌入方注册。
+- [x] Hook 失败不阻断后续 Hook、工具或 Agent，并生成可见错误报告。
+- [x] 核心 Agent Loop 未反向依赖扩展模块。
+- [x] MCP 明确延后为独立阶段。
+
+阶段相关测试覆盖 Skills 扫描/加载/隔离、Hook 顺序/失败/工具边界、系统提示渐进注入和终端错误展示。阶段相关回归为 `98 passed, 1 skipped`，全量回归为 `234 passed, 2 skipped`；两个 skip 均为 Windows 当前环境无法创建符号链接。`python -m compileall -q src tests` 与 `git diff --check` 通过。
+
+### 6. 风险、限制与下一阶段
+
+Skill frontmatter 只解析本阶段所需的单行 `name` 与 `description`，不是通用 YAML；损坏或过大的 Skill 在扫描中跳过，显式加载时返回错误。同步 Hook 应保持快速，阶段 10 将通过时间线与结构化日志提高耗时可见性。Hook 注册是编程接口，不是面向不可信项目代码的自动插件系统。
+
+阶段 10 将完成可观测性、质量与发布准备，包括结构化日志、运行时间线、Provider readiness、lint/type check、安装验证、跨平台说明、演示脚本与发布检查清单。
+
+### 7. Git 记录
+
+- 分支：`rebuild/minicode-learning`
+- 实现提交：`6201245`
+- 提交信息：`feat(phase-09): add skills and lifecycle hooks`
+- 文档收口提交：`28e5dc9 docs(phase-09): mark phase complete`。
+- 推送前复核发现 PR #3 已由用户合并至 `master`；阶段 9 提交位于其后的开发分支，将单独进入新的 Draft PR，不自动合并 `master`。
+
+## 阶段 10：可观测性、质量与发布准备
+
+### 1. 阶段目标与非目标
+
+- 用结构化、可解析的工作区事件日志记录 Agent、Session 与 Tool 生命周期。
+- 提供终端运行时间线和不访问网络的 Provider readiness 检查。
+- 把 Ruff、Mypy、分支覆盖率、编译、构建和 Mock 演示固化为一条发布门禁。
+- 通过 GitHub Actions 覆盖 Windows/Ubuntu 与 Python 3.11/3.13。
+- 实际验证 editable 安装、控制台入口、sdist/wheel 和无密钥演示。
+- 不在默认门禁中调用真实 Provider，不发布 PyPI，不自动创建 Release 或合并主分支。
+
+### 2. 参考分析与取舍
+
+参考 MiniCode Python 的 readiness surface、session replay 和 Provider 配置验证，只提取适合当前同步 CLI 的小边界。参考项目的时间线已混合更多控制器、记忆和任务图；本项目直接复用阶段 9 Hooks，把观察能力实现为可替换的事件接收器，避免再次修改核心 Agent Loop。
+
+Provider readiness 被定义为“本地配置可构造”，而不是“远程服务一定可用”。它检查 Python、RuntimeSettings、ModelSettings、SessionStore 与 SkillCatalog，不做 DNS、认证或模型可用性探测，因而不会泄露 Key 或产生费用。
+
+### 3. 可观测性设计与隐私边界
+
+`EventLog` 将一行一个 JSON 对象追加到 `.minicode-rebuild/events.jsonl`。允许字段按事件白名单固定：session ID、工具名、工具成功状态、错误代码、stop reason 和 completed。用户提示、系统提示、工具参数、工具输出及未知 Hook 字段全部丢弃；API Key 从不进入 Hook 数据。
+
+每行限制为 16 KiB，写入后 flush/fsync；读取最多 1,000 条，损坏行跳过，文件本身继续受阶段 8/9 的 Git 忽略与模型工具隔离保护。`--timeline [N]` 和交互 `/timeline` 只渲染这份脱敏数据。
+
+### 4. 质量门禁与自动化
+
+- `ruff check src tests scripts`：基本语法错误、未使用名称和 import 顺序。
+- `mypy`：检查 26 个源码文件，启用 untyped body、泛型和 Optional 相关约束。
+- `pytest --cov=minicode_rebuild`：全量分支覆盖，最低阈值 85%。
+- `compileall`：编译源码、测试与脚本。
+- `python -m build --no-isolation`：在已由 `.[dev]` 固定的构建环境生成 sdist 与通用 wheel；另行执行过隔离构建验证。
+- `scripts/demo.py`：临时工作区中运行两步 MockModel 工具演示并输出脱敏时间线。
+- GitHub Actions：Windows/Ubuntu × Python 3.11/3.13 执行同一 `release_check.py`。
+
+构建产物和 coverage 文件由 `.gitignore` 排除。质量依赖只在 `.[dev]` 中，不增加用户运行时第三方依赖。
+
+### 5. 实际验证
+
+- 阶段 10 相关测试：`37 passed`。
+- 全量测试与覆盖率：`244 passed, 2 skipped`，分支覆盖率 `85.08%`，达到 `85%` 门槛。
+- Mypy：`Success: no issues found in 26 source files`。
+- Ruff：`All checks passed!`。
+- `compileall`：通过。
+- Mock demo：完成 `list_files` 工具调用、最终响应、统计与六类生命周期事件展示。
+- 隔离构建：成功生成 `minicode_rebuild-0.1.0.tar.gz` 与 `minicode_rebuild-0.1.0-py3-none-any.whl`。
+- editable 安装与控制台入口：`minicode-rebuild 0.1.0`、`--help` 通过。
+
+两个 skip 来自当前 Windows 环境未授予符号链接创建权限；Linux CI 将执行对应真实路径逃逸测试。隔离构建首次在沙箱中因不能下载 build requirements 失败，获准联网后成功，属于环境网络限制而非项目缺陷。
+
+### 6. 发布检查清单与限制
+
+- [x] README 可复制安装、readiness、timeline、演示与质量门禁命令。
+- [x] 结构化日志不含提示、参数、输出或凭据。
+- [x] MockModel 演示无需密钥和网络且可复现。
+- [x] 测试、覆盖率、lint、type check、编译和构建通过。
+- [x] Windows/Linux 差异与符号链接跳过原因已说明。
+- [x] `.env`、运行日志、会话、构建产物、coverage 与无关目录不进入提交。
+- [x] 文档与 CLI 的 `--help`、退出码和真实行为一致。
+
+当前事件日志是追加式单进程文件，没有轮转、跨进程锁或远程导出；高并发/长期运行需要独立设计。readiness 不证明 Key 有效、模型存在或账户余额充足。Python 3.11/3.13 的最终跨平台结果由新 PR 的 GitHub Actions 给出。
+
+### 7. 下一阶段
+
+阶段 0 至阶段 10 的基础路线完成。阶段 11 不应默认“大合集”继续推进；需要从多 Agent、Git Worktree、MCP、长期记忆与检索、多模型路由、成本控制、完整 TUI 或上下文调节中选择一个能力，建立独立威胁模型、测试和提交。
+
+### 8. 构建门禁修复记录
+
+第一次把隔离构建直接放进一键脚本时，沙箱环境无法下载临时 build requirements；改为 `--no-isolation` 后又发现项目 dev 环境未显式安装 setuptools/wheel。将二者加入 `.[dev]` 后，重复写已有 `dist` 文件在 Windows 触发访问拒绝。最终门禁为每次构建创建新的临时输出目录，既不依赖临时联网，也不覆盖旧产物。
+
+此外使用全新 `.verify-venv` 从生成的 wheel 执行 `pip --no-index` 安装，`minicode-rebuild --version` 和 `--demo` 均成功，证明控制台入口和运行时依赖没有依赖 editable checkout。验证目录与构建产物已清理，未进入 Git。
+
+### 9. Git 记录
+
+- 分支：`rebuild/minicode-learning`
+- 实现提交：`edf1569`
+- 提交信息：`chore(phase-10): add readiness checks and release verification`
+- 文档收口将在下一提交记录；提交将推送到阶段 10 的独立 Draft PR，不自动合并 `master`。
+
+推送后沿用仍开放的 Draft PR #4，并将标题/说明扩展为阶段 9—10。新引入的 GitHub Actions 在 Ubuntu 3.11、Ubuntu 3.13、Windows 3.11、Windows 3.13 四个组合全部通过；PR 保持 Draft、`MERGEABLE`，未合并 `master`。

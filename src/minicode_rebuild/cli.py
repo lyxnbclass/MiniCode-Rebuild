@@ -24,9 +24,17 @@ from minicode_rebuild.config import (
     RuntimeSettings,
 )
 from minicode_rebuild.core import ModelAdapter, ModelResponse, ToolCall
+from minicode_rebuild.hooks import HookManager
 from minicode_rebuild.models import MockModel
 from minicode_rebuild.models.openai_compatible import OpenAICompatibleAdapter
+from minicode_rebuild.observability import (
+    EventLog,
+    ObservabilityError,
+    format_timeline,
+    register_event_log,
+)
 from minicode_rebuild.permissions import PermissionDecision
+from minicode_rebuild.readiness import check_readiness, format_readiness
 from minicode_rebuild.session import RewindPlan, SessionError, SessionStore
 
 EXIT_OK = 0
@@ -97,6 +105,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--list-sessions",
         action="store_true",
         help="list saved sessions for the workspace and exit",
+    )
+    parser.add_argument(
+        "--readiness",
+        action="store_true",
+        help="run offline runtime and provider configuration checks and exit",
+    )
+    parser.add_argument(
+        "--timeline",
+        nargs="?",
+        type=int,
+        const=100,
+        metavar="N",
+        help="show the latest N redacted runtime events and exit (default: 100)",
     )
     parser.add_argument(
         "--version",
@@ -215,7 +236,8 @@ def _run_interactive(
         "MiniCode Rebuild interactive\n"
         f"Session: {session.session_id}\n"
         "Commands: /help, /session, /sessions, /transcript, /checkpoints, "
-        "/rewind-preview [id], /rewind [id], /stats, /compact, /exit\n"
+        "/rewind-preview [id], /rewind [id], /skills, /timeline, /stats, "
+        "/compact, /exit\n"
     )
     output.flush()
     while True:
@@ -234,7 +256,8 @@ def _run_interactive(
         if user_message == "/help":
             output.write(
                 "Commands: /help, /session, /sessions, /transcript, /checkpoints, "
-                "/rewind-preview [id], /rewind [id], /stats, /compact, /exit\n"
+                "/rewind-preview [id], /rewind [id], /skills, /timeline, /stats, "
+                "/compact, /exit\n"
             )
             continue
         if user_message == "/session":
@@ -245,23 +268,38 @@ def _run_interactive(
             if not records:
                 output.write("No saved sessions.\n")
             for record in records:
-                active = sum(item.rewound_at is None for item in record.checkpoints)
+                active_count = sum(
+                    item.rewound_at is None for item in record.checkpoints
+                )
                 output.write(
-                    f"{record.session_id} turns={record.stats.turns} checkpoints={active}\n"
+                    f"{record.session_id} turns={record.stats.turns} "
+                    f"checkpoints={active_count}\n"
                 )
             continue
         if user_message == "/transcript":
             output.write((session.transcript() or "(empty transcript)") + "\n")
             continue
         if user_message == "/checkpoints":
-            record = session.session_record
-            active = [] if record is None else [
-                item for item in record.checkpoints if item.rewound_at is None
+            current_record = session.session_record
+            active_checkpoints = [] if current_record is None else [
+                item
+                for item in current_record.checkpoints
+                if item.rewound_at is None
             ]
-            if not active:
+            if not active_checkpoints:
                 output.write("No active checkpoints.\n")
-            for item in active:
+            for item in active_checkpoints:
                 output.write(f"{item.checkpoint_id} {item.operation} {item.path}\n")
+            continue
+        if user_message == "/skills":
+            skills = session.list_skills()
+            if not skills:
+                output.write("No workspace skills discovered.\n")
+            for skill in skills:
+                output.write(f"{skill.name}: {skill.description}\n")
+            continue
+        if user_message == "/timeline":
+            output.write(session.timeline() + "\n")
             continue
         if user_message == "/rewind-preview" or user_message.startswith("/rewind-preview "):
             checkpoint_id = user_message[len("/rewind-preview") :].strip() or None
@@ -333,6 +371,8 @@ def main(
         and not args.prompt
         and not args.demo
         and not args.list_sessions
+        and not args.readiness
+        and args.timeline is None
     ):
         parser.print_help(file=output)
         return EXIT_OK
@@ -348,14 +388,41 @@ def main(
         return EXIT_USAGE_ERROR
     if args.list_sessions and (
         args.prompt or args.interactive or args.headless or args.demo or args.resume
+        or args.readiness or args.timeline is not None
     ):
         error_output.write(
             "Configuration error: --list-sessions cannot run a model request\n"
         )
         return EXIT_USAGE_ERROR
+    if args.readiness and (
+        args.prompt or args.interactive or args.headless or args.resume
+        or args.list_sessions or args.timeline is not None
+    ):
+        error_output.write(
+            "Configuration error: --readiness cannot run a model request\n"
+        )
+        return EXIT_USAGE_ERROR
+    if args.timeline is not None and (
+        args.prompt or args.interactive or args.headless or args.demo or args.resume
+        or args.list_sessions or args.readiness
+    ):
+        error_output.write(
+            "Configuration error: --timeline cannot run a model request\n"
+        )
+        return EXIT_USAGE_ERROR
 
     try:
         workspace = _workspace(args.cwd)
+        event_log = EventLog(workspace)
+        if args.readiness:
+            report = check_readiness(
+                workspace, env, require_provider=not args.demo
+            )
+            output.write(format_readiness(report) + "\n")
+            return EXIT_OK if report.ready else EXIT_RUNTIME_ERROR
+        if args.timeline is not None:
+            output.write(format_timeline(event_log.read(limit=args.timeline)) + "\n")
+            return EXIT_OK
         if args.list_sessions:
             records = SessionStore(workspace).list()
             if not records:
@@ -379,9 +446,12 @@ def main(
                 "WARNING: --allow-mutations approves file and command changes "
                 "for this Headless run.\n"
             )
-            permission_prompt = lambda _request: PermissionDecision.ALLOW_ONCE
+            def permission_prompt(_request):
+                return PermissionDecision.ALLOW_ONCE
         else:
             permission_prompt = None
+        hooks = HookManager()
+        register_event_log(hooks, event_log)
         session = build_session(
             model=selected_model,
             workspace=workspace,
@@ -389,6 +459,8 @@ def main(
             output=output,
             permission_prompt=permission_prompt,
             resume=args.resume,
+            hooks=hooks,
+            event_log=event_log,
         )
         if args.interactive:
             return _run_interactive(
@@ -407,6 +479,9 @@ def main(
         return EXIT_USAGE_ERROR
     except SessionError as exc:
         error_output.write(f"Session error: {exc}\n")
+        return EXIT_USAGE_ERROR
+    except ObservabilityError as exc:
+        error_output.write(f"Runtime data error: {exc}\n")
         return EXIT_USAGE_ERROR
     except KeyboardInterrupt:
         error_output.write("\nInterrupted by user. Exiting safely.\n")
