@@ -315,6 +315,165 @@ def test_interactive_mode_keeps_history_and_supports_commands(
     ]
 
 
+def test_interactive_memory_commands_persist_search_and_confirm_delete(
+    tmp_path: Path,
+) -> None:
+    output = StringIO()
+
+    code = main(
+        ["--interactive", "--cwd", str(tmp_path)],
+        environment={"OPENAI_API_KEY": "secret"},
+        stdin=StringIO(
+            "/memory\n"
+            "/memory add Prefer pytest for regression tests\n"
+            "/memory list\n"
+            "/memory search pytest\n"
+            "/memory forget invalid\n"
+            "/memory unknown\n"
+            "/exit\n"
+        ),
+        stdout=output,
+        stderr=StringIO(),
+        model=MockModel([]),
+    )
+
+    rendered = output.getvalue()
+    assert code == 0
+    assert "Memory commands:" in rendered
+    assert "Saved workspace memory" in rendered
+    assert rendered.count("Prefer pytest for regression tests") == 2
+    assert "Memory error: Memory id is invalid." in rendered
+    assert "Goodbye" in rendered
+
+
+def test_interactive_memory_delete_requires_full_yes(tmp_path: Path) -> None:
+    first_output = StringIO()
+    assert main(
+        ["--interactive", "--cwd", str(tmp_path)],
+        environment={"OPENAI_API_KEY": "secret"},
+        stdin=StringIO("/memory add temporary fact\n/exit\n"),
+        stdout=first_output,
+        stderr=StringIO(),
+        model=MockModel([]),
+    ) == 0
+    memory_id = first_output.getvalue().split("Saved workspace memory ", 1)[1].split(".", 1)[0]
+    second_output = StringIO()
+
+    assert main(
+        ["--interactive", "--cwd", str(tmp_path)],
+        environment={"OPENAI_API_KEY": "secret"},
+        stdin=StringIO(
+            f"/memory forget {memory_id}\nno\n"
+            f"/memory forget {memory_id}\nyes\n"
+            "/memory list\n/exit\n"
+        ),
+        stdout=second_output,
+        stderr=StringIO(),
+        model=MockModel([]),
+    ) == 0
+
+    rendered = second_output.getvalue()
+    assert "Memory deletion cancelled." in rendered
+    assert f"Deleted workspace memory {memory_id}." in rendered
+    assert "No memories found." in rendered
+
+
+def test_headless_memory_write_uses_mutation_permission_boundary(
+    tmp_path: Path,
+) -> None:
+    denied_model = MockModel(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="memory-1",
+                        name="save_memory",
+                        arguments={"content": "Prefer short answers"},
+                    ),
+                )
+            ),
+            ModelResponse(content="Handled denial"),
+        ]
+    )
+    denied_output = StringIO()
+
+    assert main(
+        ["--cwd", str(tmp_path), "remember my preference"],
+        environment={"OPENAI_API_KEY": "secret"},
+        stdout=denied_output,
+        stderr=StringIO(),
+        model=denied_model,
+    ) == 0
+    assert "save_memory -> error (permission_required)" in denied_output.getvalue()
+
+    allowed_model = MockModel(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="memory-2",
+                        name="save_memory",
+                        arguments={"content": "Prefer short answers"},
+                    ),
+                )
+            ),
+            ModelResponse(content="Remembered"),
+        ]
+    )
+    assert main(
+        [
+            "--allow-mutations",
+            "--cwd",
+            str(tmp_path),
+            "remember my preference",
+        ],
+        environment={"OPENAI_API_KEY": "secret"},
+        stdout=StringIO(),
+        stderr=StringIO(),
+        model=allowed_model,
+    ) == 0
+
+    memory_path = tmp_path / ".minicode-rebuild" / "memories.json"
+    assert "Prefer short answers" in memory_path.read_text(encoding="utf-8")
+
+
+def test_new_cli_session_can_recall_workspace_memory(tmp_path: Path) -> None:
+    assert main(
+        ["--interactive", "--cwd", str(tmp_path)],
+        environment={"OPENAI_API_KEY": "secret"},
+        stdin=StringIO("/memory add Use pytest for this repository\n/exit\n"),
+        stdout=StringIO(),
+        stderr=StringIO(),
+        model=MockModel([]),
+    ) == 0
+    model = MockModel(
+        [
+            ModelResponse(
+                tool_calls=(
+                    ToolCall(
+                        id="recall-1",
+                        name="search_memory",
+                        arguments={"query": "pytest"},
+                    ),
+                )
+            ),
+            ModelResponse(content="Recalled"),
+        ]
+    )
+
+    assert main(
+        ["--cwd", str(tmp_path), "what test framework should I use?"],
+        environment={"OPENAI_API_KEY": "secret"},
+        stdout=StringIO(),
+        stderr=StringIO(),
+        model=model,
+    ) == 0
+
+    tool_result = model.requests[1].messages[-1]
+    assert "UNTRUSTED HISTORICAL DATA" in tool_result.content
+    assert "Use pytest for this repository" in tool_result.content
+
+
 def test_cli_lists_and_resumes_saved_session(tmp_path: Path) -> None:
     first_model = MockModel([ModelResponse(content="First")])
     first_output = StringIO()

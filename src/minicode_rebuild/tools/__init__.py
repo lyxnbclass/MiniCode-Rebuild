@@ -1,6 +1,12 @@
 """Built-in tool definitions."""
 
 from minicode_rebuild.tools.command import run_command_tool
+from minicode_rebuild.tools.memory import (
+    MEMORY_TOOLS,
+    delete_memory_tool,
+    save_memory_tool,
+    search_memory_tool,
+)
 from minicode_rebuild.tools.read_only import (
     READ_ONLY_TOOLS,
     glob_search_tool,
@@ -21,10 +27,12 @@ EXTENSION_TOOLS = (load_skill_tool,)
 
 __all__ = [
     "EXTENSION_TOOLS",
+    "MEMORY_TOOLS",
     "MUTATING_TOOLS",
     "READ_ONLY_TOOLS",
     "WRITE_TOOLS",
     "edit_file_tool",
+    "delete_memory_tool",
     "glob_search_tool",
     "grep_files_tool",
     "list_files_tool",
@@ -32,5 +40,7 @@ __all__ = [
     "patch_file_tool",
     "read_file_tool",
     "run_command_tool",
+    "save_memory_tool",
+    "search_memory_tool",
     "write_file_tool",
 ]
