@@ -8,12 +8,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前阶段 | 阶段 11：长期记忆与检索（本地完成，待远端 CI） |
+| 当前阶段 | 阶段 11：长期记忆与检索（已完成） |
 | 最近完成 | 阶段 11：长期记忆与检索 |
 | 当前分支 | `codex/phase-11-memory` |
 | 最新阶段实现提交 | `d06ad40 feat(phase-11): add workspace long-term memory` |
 | 测试状态 | 阶段相关回归 `61 passed, 1 skipped`；全量回归 `276 passed, 3 skipped`；分支覆盖率 `85.47%` |
-| 下一步 | 推送阶段 11 分支、创建独立 Draft PR，并核对跨平台 CI |
+| 下一步 | 审核并由用户合并 Draft PR #5；其他高级能力继续保持独立阶段 |
 
 ## 总体架构
 
@@ -1793,6 +1793,7 @@ Provider readiness 被定义为“本地配置可构造”，而不是“远程�
 - 分支：`codex/phase-11-memory`。
 - 实现提交：`d06ad40`。
 - 提交信息：`feat(phase-11): add workspace long-term memory`。
+- CI 修复提交：`ee6f237 fix(phase-11): preserve memory path escape errors`。
 - 文档收口使用独立提交；分支推送后创建以 `master` 为基线的 Draft PR，不自动合并。
 
 ### 8. 首轮 CI 修复记录
@@ -1800,3 +1801,5 @@ Provider readiness 被定义为“本地配置可构造”，而不是“远程�
 Draft PR #5 的首轮 Windows/Ubuntu、Python 3.11/3.13 四组任务都在同一个符号链接安全测试失败。日志证明存储初始化已经拒绝越界路径，没有在工作区外写文件；失败仅因为构造阶段把 `path_outside_workspace` 统一转换成了“工作区无法解析”，而测试要求保留“存储路径逃逸”的精确分类。
 
 修复只在 `MemoryStore` 构造阶段区分该稳定错误码，继续拒绝操作，并增加不依赖主机符号链接权限的错误映射单元测试。修复后本地完整发布门禁为 `276 passed, 3 skipped`、覆盖率 `85.47%`，Ruff、Mypy、编译、构建与 Mock 演示全部通过；最终跨平台结果以重新触发的 PR #5 CI 为准。
+
+`ee6f237` 推送后，GitHub Actions 的 Ubuntu 3.11、Ubuntu 3.13、Windows 3.11、Windows 3.13 四组任务全部通过。PR #5 保持 Draft、以 `master` 为基线且可合并；阶段 11 不自动修改或合并主分支。
