@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import minicode_rebuild.memory as memory_module
 from minicode_rebuild.memory import (
     MAX_MEMORY_CONTENT,
     MAX_MEMORY_PREVIEW,
@@ -15,6 +16,7 @@ from minicode_rebuild.memory import (
     MemoryStoreError,
     format_memory_records,
 )
+from minicode_rebuild.workspace import WorkspacePathError
 
 
 class SequenceClock:
@@ -241,3 +243,17 @@ def test_memory_storage_rejects_runtime_symlink_escape(tmp_path: Path) -> None:
     with pytest.raises(MemoryStoreError, match="escapes"):
         MemoryStore(tmp_path).add("must stay local")
     assert not (outside / "memories.json").exists()
+
+
+def test_constructor_preserves_path_escape_classification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def reject_path(*args: object) -> Path:
+        raise WorkspacePathError(
+            "path_outside_workspace", "The path is outside workspace."
+        )
+
+    monkeypatch.setattr(memory_module, "resolve_workspace_path", reject_path)
+
+    with pytest.raises(MemoryStoreError, match="storage path escapes"):
+        MemoryStore(tmp_path)

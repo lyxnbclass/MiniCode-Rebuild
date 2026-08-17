@@ -12,7 +12,7 @@
 | 最近完成 | 阶段 11：长期记忆与检索 |
 | 当前分支 | `codex/phase-11-memory` |
 | 最新阶段实现提交 | `d06ad40 feat(phase-11): add workspace long-term memory` |
-| 测试状态 | 阶段相关回归 `60 passed, 1 skipped`；全量回归 `275 passed, 3 skipped`；分支覆盖率 `85.45%` |
+| 测试状态 | 阶段相关回归 `61 passed, 1 skipped`；全量回归 `276 passed, 3 skipped`；分支覆盖率 `85.47%` |
 | 下一步 | 推送阶段 11 分支、创建独立 Draft PR，并核对跨平台 CI |
 
 ## 总体架构
@@ -1771,9 +1771,9 @@ Provider readiness 被定义为“本地配置可构造”，而不是“远程�
 
 ### 5. 验收与安全回归
 
-- 阶段相关回归：`60 passed, 1 skipped`。
-- 全量回归：`275 passed, 3 skipped`。
-- 分支覆盖率：`85.45%`，达到 `85%` 门槛。
+- 阶段相关回归：`61 passed, 1 skipped`。
+- 全量回归：`276 passed, 3 skipped`。
+- 分支覆盖率：`85.47%`，达到 `85%` 门槛。
 - Ruff：`All checks passed!`。
 - Mypy：`Success: no issues found in 28 source files`。
 - `compileall`、sdist/wheel 构建和无网络 MockModel 演示全部通过。
@@ -1794,3 +1794,9 @@ Provider readiness 被定义为“本地配置可构造”，而不是“远程�
 - 实现提交：`d06ad40`。
 - 提交信息：`feat(phase-11): add workspace long-term memory`。
 - 文档收口使用独立提交；分支推送后创建以 `master` 为基线的 Draft PR，不自动合并。
+
+### 8. 首轮 CI 修复记录
+
+Draft PR #5 的首轮 Windows/Ubuntu、Python 3.11/3.13 四组任务都在同一个符号链接安全测试失败。日志证明存储初始化已经拒绝越界路径，没有在工作区外写文件；失败仅因为构造阶段把 `path_outside_workspace` 统一转换成了“工作区无法解析”，而测试要求保留“存储路径逃逸”的精确分类。
+
+修复只在 `MemoryStore` 构造阶段区分该稳定错误码，继续拒绝操作，并增加不依赖主机符号链接权限的错误映射单元测试。修复后本地完整发布门禁为 `276 passed, 3 skipped`、覆盖率 `85.47%`，Ruff、Mypy、编译、构建与 Mock 演示全部通过；最终跨平台结果以重新触发的 PR #5 CI 为准。

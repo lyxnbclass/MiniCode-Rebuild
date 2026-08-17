@@ -131,6 +131,10 @@ class MemoryStore:
         try:
             self.path = resolve_workspace_path(self.workspace, MEMORY_FILE)
         except WorkspacePathError as exc:
+            if exc.error_code == "path_outside_workspace":
+                raise MemoryStoreError(
+                    "Memory storage path escapes the workspace."
+                ) from exc
             raise MemoryStoreError("Memory workspace cannot be resolved.") from exc
         if isinstance(max_records, bool) or not isinstance(max_records, int):
             raise TypeError("max_records must be an integer")
