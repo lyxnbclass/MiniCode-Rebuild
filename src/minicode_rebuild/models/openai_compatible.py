@@ -295,6 +295,8 @@ class OpenAICompatibleAdapter:
                 _serialize_tool(tool)
                 for tool in request.tools
             ]
+        if request.max_output_tokens is not None:
+            payload["max_tokens"] = request.max_output_tokens
 
         response = self._transport.post_json(
             self._settings.chat_completions_url,

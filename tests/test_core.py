@@ -59,3 +59,12 @@ def test_model_tool_rejects_invalid_function_name(name: str) -> None:
 def test_model_request_requires_at_least_one_message() -> None:
     with pytest.raises(ValueError, match="message"):
         ModelRequest(messages=())
+
+
+@pytest.mark.parametrize("value", [0, -1, True])
+def test_model_request_rejects_invalid_output_limit(value: int) -> None:
+    with pytest.raises(ValueError, match="max_output_tokens"):
+        ModelRequest(
+            messages=(Message(role=MessageRole.USER, content="hello"),),
+            max_output_tokens=value,
+        )

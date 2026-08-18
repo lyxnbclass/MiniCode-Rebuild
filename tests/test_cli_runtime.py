@@ -13,6 +13,7 @@ from minicode_rebuild.cli_runtime import (
 from minicode_rebuild.config import RuntimeSettings
 from minicode_rebuild.context import ContextManager, ContextPolicy
 from minicode_rebuild.core import ModelResponse, TokenUsage
+from minicode_rebuild.cost import TokenBudgetPolicy
 from minicode_rebuild.hooks import HookEvent, HookManager
 from minicode_rebuild.memory import MemoryStore
 from minicode_rebuild.models import MockModel
@@ -54,6 +55,34 @@ def test_session_accumulates_turn_and_usage_stats(tmp_path: Path) -> None:
     )
     assert format_stats(session.stats) == (
         "turns=2 steps=2 tools=0 tokens=8 (input=5 output=3) compactions=0"
+    )
+
+
+def test_session_budget_uses_persisted_reported_usage(tmp_path: Path) -> None:
+    settings = RuntimeSettings(
+        max_steps=3,
+        system_prompt="Be precise",
+        token_budget_policy=TokenBudgetPolicy(session_tokens=100),
+    )
+    session = AgentSession(
+        model=MockModel(
+            [ModelResponse(content="one", usage=TokenUsage(60, 20))]
+        ),
+        tools=ToolRegistry(),
+        context=ToolContext(tmp_path),
+        settings=settings,
+        output=StringIO(),
+    )
+
+    first = session.run("first")
+    second = session.run("second")
+
+    assert first.completed is True
+    assert second.stop_reason is AgentStopReason.BUDGET_EXHAUSTED
+    assert session.stats.input_tokens == 60
+    assert session.stats.output_tokens == 20
+    assert session.budget_status() == (
+        "token-budget=100 used=80 remaining=20 max-output=unbounded"
     )
 
 

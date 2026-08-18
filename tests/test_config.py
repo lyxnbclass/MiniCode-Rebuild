@@ -94,6 +94,8 @@ def test_runtime_settings_load_cli_environment() -> None:
             "MINICODE_KEEP_RECENT_TURNS": "3",
             "MINICODE_TOOL_RESULT_TOKENS": "700",
             "MINICODE_SUMMARY_TOKENS": "500",
+            "MINICODE_SESSION_TOKEN_BUDGET": "12000",
+            "MINICODE_MAX_OUTPUT_TOKENS": "800",
         }
     )
 
@@ -104,6 +106,8 @@ def test_runtime_settings_load_cli_environment() -> None:
     assert settings.context_policy.keep_recent_turns == 3
     assert settings.context_policy.tool_result_tokens == 700
     assert settings.context_policy.summary_tokens == 500
+    assert settings.token_budget_policy.session_tokens == 12000
+    assert settings.token_budget_policy.max_output_tokens == 800
 
 
 @pytest.mark.parametrize("value", ["zero", "0", "-1"])
@@ -123,6 +127,22 @@ def test_runtime_settings_reject_invalid_max_steps(value: str) -> None:
     ],
 )
 def test_runtime_settings_reject_invalid_context_policy(
+    variable: str,
+    value: str,
+) -> None:
+    with pytest.raises(ModelConfigurationError, match=variable):
+        RuntimeSettings.from_env({variable: value})
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("MINICODE_SESSION_TOKEN_BUDGET", "0"),
+        ("MINICODE_SESSION_TOKEN_BUDGET", "bad"),
+        ("MINICODE_MAX_OUTPUT_TOKENS", "-1"),
+    ],
+)
+def test_runtime_settings_reject_invalid_token_budget(
     variable: str,
     value: str,
 ) -> None:

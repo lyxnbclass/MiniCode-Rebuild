@@ -10,10 +10,12 @@ from minicode_rebuild.context import ContextManager, ContextPolicy
 from minicode_rebuild.core import (
     Message,
     MessageRole,
+    ModelRequest,
     ModelResponse,
     TokenUsage,
     ToolCall,
 )
+from minicode_rebuild.cost import TokenBudgetPolicy, estimate_request_tokens
 from minicode_rebuild.models import MockModel
 from minicode_rebuild.tooling import (
     ToolContext,
@@ -331,6 +333,68 @@ def test_max_steps_prevents_infinite_tool_loop(tmp_path: Path) -> None:
     assert result.usage == TokenUsage(2, 2)
     assert len(model.requests) == 2
     assert "2" in result.content
+
+
+def test_budget_sets_provider_output_limit(tmp_path: Path) -> None:
+    model = MockModel(
+        [ModelResponse(content="Done", usage=TokenUsage(10, 2))]
+    )
+
+    result = run(
+        tmp_path,
+        model,
+        token_budget=TokenBudgetPolicy(
+            session_tokens=10_000,
+            max_output_tokens=77,
+        ),
+    )
+
+    assert result.completed is True
+    assert model.requests[0].max_output_tokens == 77
+
+
+def test_budget_blocks_without_calling_provider(tmp_path: Path) -> None:
+    model = MockModel([ModelResponse(content="must not run")])
+
+    result = run(
+        tmp_path,
+        model,
+        token_budget=TokenBudgetPolicy(session_tokens=1),
+    )
+
+    assert result.stop_reason is AgentStopReason.BUDGET_EXHAUSTED
+    assert result.steps == 0
+    assert result.usage == TokenUsage()
+    assert model.requests == ()
+
+
+def test_budget_uses_reported_usage_before_next_tool_step(tmp_path: Path) -> None:
+    call = ToolCall(id="call-1", name="echo", arguments={"text": "hello"})
+    model = MockModel(
+        [
+            ModelResponse(tool_calls=(call,), usage=TokenUsage(9_000, 500)),
+            ModelResponse(content="must not run"),
+        ]
+    )
+    registry = ToolRegistry([echo_tool()])
+    initial = ModelRequest(
+        messages=(Message(role=MessageRole.USER, content="Help me"),),
+        tools=registry.model_tools(),
+    )
+    policy = TokenBudgetPolicy(
+        session_tokens=estimate_request_tokens(initial) + 9_500
+    )
+
+    result = run(
+        tmp_path,
+        model,
+        registry,
+        token_budget=policy,
+    )
+
+    assert result.stop_reason is AgentStopReason.BUDGET_EXHAUSTED
+    assert result.steps == 1
+    assert len(model.requests) == 1
 
 
 def test_system_prompt_and_history_precede_new_user_message(tmp_path: Path) -> None:

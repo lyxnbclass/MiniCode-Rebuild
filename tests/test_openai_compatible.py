@@ -108,6 +108,33 @@ def test_adapter_normalizes_text_response_and_usage() -> None:
     assert call["timeout"] == 30
 
 
+def test_adapter_sends_normalized_output_limit() -> None:
+    transport = FakeTransport(
+        [
+            json_response(
+                {
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "Hello"},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                }
+            )
+        ]
+    )
+    adapter = OpenAICompatibleAdapter(settings(), transport=transport)
+
+    adapter.complete(
+        ModelRequest(
+            messages=(Message(role=MessageRole.USER, content="Hi"),),
+            max_output_tokens=321,
+        )
+    )
+
+    assert transport.calls[0]["payload"]["max_tokens"] == 321
+
+
 def test_adapter_serializes_tools_and_normalizes_tool_calls() -> None:
     transport = FakeTransport(
         [

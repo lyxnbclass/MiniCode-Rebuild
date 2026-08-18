@@ -16,6 +16,7 @@ from minicode_rebuild.core import (
     TokenUsage,
     ToolCall,
 )
+from minicode_rebuild.cost import TokenBudgetPolicy, evaluate_budget
 from minicode_rebuild.tooling import ToolContext, ToolRegistry, ToolResult
 
 DEFAULT_MAX_STEPS = 12
@@ -30,6 +31,7 @@ class AgentStopReason(str, Enum):
     EMPTY_RESPONSE = "empty_response"
     MAX_STEPS = "max_steps"
     MODEL_ERROR = "model_error"
+    BUDGET_EXHAUSTED = "budget_exhausted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +138,8 @@ def run_agent_turn(
     max_steps: int = DEFAULT_MAX_STEPS,
     tool_observer: ToolObserver | None = None,
     message_preparer: MessagePreparer | None = None,
+    token_budget: TokenBudgetPolicy | None = None,
+    used_tokens: int = 0,
 ) -> AgentResult:
     """Run one bounded turn until final text or an explicit stop condition."""
 
@@ -144,6 +148,13 @@ def run_agent_turn(
         raise TypeError("tools must be a ToolRegistry")
     if not isinstance(context, ToolContext):
         raise TypeError("context must be a ToolContext")
+    if isinstance(used_tokens, bool) or not isinstance(used_tokens, int):
+        raise TypeError("used_tokens must be an integer")
+    if used_tokens < 0:
+        raise ValueError("used_tokens must not be negative")
+    budget = token_budget or TokenBudgetPolicy()
+    if not isinstance(budget, TokenBudgetPolicy):
+        raise TypeError("token_budget must be a TokenBudgetPolicy")
 
     messages = _initial_messages(
         user_message=user_message,
@@ -167,6 +178,25 @@ def run_agent_turn(
         request = ModelRequest(
             messages=request_messages,
             tools=tools.model_tools(),
+        )
+        decision = evaluate_budget(
+            request,
+            budget,
+            used_tokens=used_tokens + usage.total_tokens,
+        )
+        if not decision.allowed:
+            return _result(
+                content=decision.reason or "Token budget exhausted.",
+                stop_reason=AgentStopReason.BUDGET_EXHAUSTED,
+                messages=messages,
+                steps=step - 1,
+                tool_calls=tool_call_count,
+                usage=usage,
+            )
+        request = ModelRequest(
+            messages=request_messages,
+            tools=request.tools,
+            max_output_tokens=decision.max_output_tokens,
         )
         try:
             response = model.complete(request)
