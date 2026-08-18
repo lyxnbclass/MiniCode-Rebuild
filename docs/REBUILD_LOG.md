@@ -8,12 +8,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前阶段 | 阶段 11：长期记忆与检索（已完成） |
-| 最近完成 | 阶段 11：长期记忆与检索 |
-| 当前分支 | `codex/phase-11-memory` |
-| 最新阶段实现提交 | `d06ad40 feat(phase-11): add workspace long-term memory` |
-| 测试状态 | 阶段相关回归 `61 passed, 1 skipped`；全量回归 `276 passed, 3 skipped`；分支覆盖率 `85.47%` |
-| 下一步 | 审核并由用户合并 Draft PR #5；其他高级能力继续保持独立阶段 |
+| 当前阶段 | 阶段 12：成本控制（已完成本地实现与验证） |
+| 最近完成 | 阶段 12：Token 成本控制 |
+| 当前分支 | `codex/phase-12-cost-control` |
+| 最新阶段实现提交 | `fa243dc feat(phase-12): add token cost controls` |
+| 测试状态 | 阶段相关回归 `107 passed`；全量回归 `298 passed, 3 skipped`；分支覆盖率 `85.58%` |
+| 下一步 | 推送阶段 12 分支、创建 Draft PR 并完成跨平台 CI；其他高级能力继续保持独立阶段 |
 
 ## 总体架构
 
@@ -1803,3 +1803,67 @@ Draft PR #5 的首轮 Windows/Ubuntu、Python 3.11/3.13 四组任务都在同一
 修复只在 `MemoryStore` 构造阶段区分该稳定错误码，继续拒绝操作，并增加不依赖主机符号链接权限的错误映射单元测试。修复后本地完整发布门禁为 `276 passed, 3 skipped`、覆盖率 `85.47%`，Ruff、Mypy、编译、构建与 Mock 演示全部通过；最终跨平台结果以重新触发的 PR #5 CI 为准。
 
 `ee6f237` 推送后，GitHub Actions 的 Ubuntu 3.11、Ubuntu 3.13、Windows 3.11、Windows 3.13 四组任务全部通过。PR #5 保持 Draft、以 `master` 为基线且可合并；阶段 11 不自动修改或合并主分支。
+
+## 阶段 12：成本控制
+
+### 1. 开发前计划
+
+- 只实现阶段 11 高级能力清单中的“成本控制”，不同时引入模型路由、MCP、多 Agent、Worktree 编排或 TUI。
+- 使用 Provider 无关的 token 数量作为稳定控制单位，不内置会随时间变化的模型价格，也不宣称计算精确货币账单。
+- 支持可选的持久化会话累计预算和单次响应输出上限；两者都未配置时保持此前行为。
+- 在每次 Provider 调用前估算消息与工具声明的输入 token，预算不足时失败关闭，不发送网络请求。
+- 将当前剩余额度映射为规范化 `ModelRequest.max_output_tokens`，OpenAI-compatible 适配器再写入 `max_tokens`。
+- 复用阶段 6 的会话 token 统计，使恢复会话继续消费同一预算；交互 CLI 通过 `/budget` 展示当前状态。
+- 为配置校验、请求估算、输出收紧、调用前拒绝、跨模型步骤累计、会话恢复、CLI 和适配器序列化补齐测试。
+
+### 2. 威胁模型与非目标
+
+- 防止失控循环持续调用模型：每个模型步骤都重新执行预算门禁，而不是只在一轮开始时检查一次。
+- 防止“大上下文 + 大输出上限”突破预留：输入估算先占用剩余额度，输出上限只能使用其余空间。
+- 防止无效配置静默失效：环境变量和 CLI 参数都只接受正整数，零、负数和非整数直接返回配置错误。
+- 防止恢复会话绕过累计限制：门禁使用持久化的 input/output token 统计作为已用量。
+- 本阶段不维护 Provider 价格表，不计算人民币或美元，不解析缓存、推理等厂商专有 token，也不替代 Provider 账户配额。
+
+### 3. 预算模型
+
+`TokenBudgetPolicy` 包含两个独立可选限制：`session_tokens` 控制一个持久化会话累计的 Provider 报告 token，`max_output_tokens` 控制每次响应的最大输出。`estimate_request_tokens()` 复用阶段 7 的中英文启发式，并额外计入工具名称、描述和 JSON Schema。
+
+每次模型调用前计算：
+
+```text
+remaining = session_budget - persisted_and_current_usage
+available_output = remaining - estimated_input
+request.max_output_tokens = min(configured_output_limit, available_output)
+```
+
+若 `available_output < 1`，Agent 以 `budget_exhausted` 停止，模型适配器不会收到请求。若只配置输出上限，则每个请求都使用固定上限；若只配置会话预算，则输出上限根据剩余额度动态收紧。
+
+### 4. Agent、会话与 CLI 集成
+
+`run_agent_turn()` 在消息压缩完成、构造 Provider 请求之后执行门禁，因此估算针对实际即将发送的消息。工具返回后进入下一模型步骤时会再次检查，并计入本轮前序响应的 usage。门禁拒绝不执行新的 Provider 请求，也不伪造模型回答。
+
+`AgentSession` 把已经持久化的 input/output token 作为本轮起始用量，因而 `--resume` 无法重置会话预算。`/budget` 直接显示预算、Provider 报告用量、剩余额度和单次输出上限，不调用模型。Headless 和交互模式都可使用 `--token-budget`、`--max-output-tokens`，也可通过 `MINICODE_SESSION_TOKEN_BUDGET`、`MINICODE_MAX_OUTPUT_TOKENS` 配置。
+
+### 5. 验收与安全回归
+
+- 阶段相关回归：`107 passed`。
+- 全量回归：`298 passed, 3 skipped`。
+- 分支覆盖率：`85.58%`，达到 `85%` 门槛。
+- Ruff：`All checks passed!`。
+- Mypy：`Success: no issues found in 29 source files`。
+- 测试证明预算不足时 Provider 零调用、单次输出上限正确下传、多步工具循环重新检查、恢复会话沿用已报告用量、无效配置被拒绝。
+
+当前 Windows 环境的 `3 skipped` 仍是缺少目录符号链接权限的安全测试；Ubuntu CI 会执行真实符号链接路径。该环境限制与成本控制无关。
+
+### 6. 限制与后续边界
+
+输入 token 是确定但近似的跨 Provider 估算，不是服务端 tokenizer。实际 usage 只能在响应后获得，所以单次请求可能因估算偏差略微越过会话预算；之后的模型步骤会使用更新后的真实统计拒绝继续调用。若 Provider 不返回 usage，累计统计无法精确增长，但单次输出上限和请求前估算仍然生效。
+
+不同 Provider 对 `max_tokens`、隐藏推理 token、缓存命中和计费规则的解释可能不同。需要不可突破的货币限额时，必须同时使用 Provider 账户侧预算、限流或预付额度。本阶段不通过硬编码价格或猜测隐藏用量制造虚假的精确性。
+
+### 7. Git 记录
+
+- 基线：阶段 11 的 PR #5 已合并至 `master`，合并提交为 `4bc6e26`。
+- 分支：`codex/phase-12-cost-control`。
+- 实现提交：`fa243dc feat(phase-12): add token cost controls`。
+- 文档收口使用独立提交；分支推送后创建以 `master` 为基线的 Draft PR，不自动合并。

@@ -4,7 +4,7 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 
 ## 当前状态
 
-阶段 0“仓库初始化与工程基线”至阶段 10“可观测性、质量与发布准备”已经完成；阶段 11 已选择并实现独立高级能力“长期记忆与检索”。
+阶段 0“仓库初始化与工程基线”至阶段 10“可观测性、质量与发布准备”已经完成；阶段 11 已实现“长期记忆与检索”，阶段 12 已实现独立高级能力“成本控制”。
 
 目前已经具备：
 
@@ -38,11 +38,13 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 - 将脱敏生命周期元数据写入工作区 JSONL 日志，并通过时间线查看运行过程；
 - 在工作区本地显式保存长期记忆，并通过有界词法检索按需召回；
 - 将记忆结果标记为不可信历史数据，模型写入和删除仍经过权限边界；
+- 为会话设置可选 token 预算，并在请求前估算输入和工具协议成本；
+- 按剩余额度限制单次模型输出，预算不足时不调用 Provider；
 - 离线检查 Python、运行配置、Provider 配置、会话存储、Skills 与记忆存储 readiness；
 - 使用 Ruff、Mypy、分支覆盖率、构建、安装和跨平台 CI 作为发布质量门禁；
 - 执行自动化测试。
 
-阶段 0 至阶段 10 的基础路线和阶段 11 的“长期记忆与检索”已经完成。其余高级能力仍必须单独选择、设计、测试和提交。
+阶段 0 至阶段 10 的基础路线、阶段 11“长期记忆与检索”和阶段 12“成本控制”已经完成。其余高级能力仍必须单独选择、设计、测试和提交。
 
 ## 长期记忆与检索
 
@@ -60,6 +62,19 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 `/memory add` 是用户显式持久化指令；`/memory forget` 会展示目标内容，并要求完整输入 `yes`。模型调用 `save_memory` 或 `delete_memory` 时仍走现有权限提示，Headless 模式默认拒绝，只有显式使用 `--allow-mutations` 才允许本次进程修改记忆。
 
 存储最多 500 条记忆；单条内容、标签、查询、返回数量和结果预览均有上限。检索使用无网络、无第三方依赖的确定性词法评分，适合项目约定、用户明确偏好和长期任务事实，不等同于 embedding 语义搜索。检索结果始终带有“不可信历史数据”边界，不得覆盖当前系统或用户指令，也可能已经过时。
+
+## Token 成本控制
+
+成本控制是显式启用的 Provider 无关 token 门禁。可以限制整个持久化会话的累计 token 用量，也可以单独限制每次模型响应的最大输出：
+
+```powershell
+minicode-rebuild --token-budget 50000 --max-output-tokens 2000 "分析当前项目"
+minicode-rebuild --interactive --resume latest --token-budget 50000
+```
+
+请求发出前，运行时会估算消息与工具声明占用的输入 token，并从会话剩余额度中扣除输入预留，再把允许的输出上限映射到 OpenAI-compatible `max_tokens`。如果请求至少需要的输入和一个输出 token 都无法容纳，Agent 以 `budget_exhausted` 停止，不调用 Provider。恢复会话时，门禁会继续使用已经持久化的 Provider token 统计。交互模式可用 `/budget` 查看限制、已用量和剩余额度。
+
+该能力用于阻止失控的多步调用，不等同于精确账单上限。输入预算使用跨 Provider 启发式估算；服务端实际计费、缓存 token、推理 token 和价格规则由 Provider 决定。当前请求的真实用量只能在响应返回后得知，因此可能小幅越过估算值，但后续请求会使用更新后的服务端统计重新检查。若 Provider 不返回 usage，累计会话用量也无法精确增长；需要硬货币限额时仍应在 Provider 账户侧设置配额。
 
 ## 可观测性与 Readiness
 
@@ -144,6 +159,8 @@ python -m minicode_rebuild --help
 | `OPENAI_BASE_URL` | `https://api.deepseek.com` | API 基址或完整 `/chat/completions` 地址 |
 | `MINICODE_MODEL_TIMEOUT` | `120` | 请求超时秒数，必须是正整数 |
 | `MINICODE_MAX_STEPS` | `12` | 每轮最大模型调用步数，必须是正整数 |
+| `MINICODE_SESSION_TOKEN_BUDGET` | 无 | 可选的持久化会话累计 token 预算，必须是正整数 |
+| `MINICODE_MAX_OUTPUT_TOKENS` | 无 | 可选的单次模型响应 token 上限，必须是正整数 |
 | `MINICODE_SYSTEM_PROMPT` | 内置安全提示 | 覆盖本进程使用的系统提示 |
 | `MINICODE_CONTEXT_TOKENS` | `16000` | 单轮输入的启发式上下文预算 |
 | `MINICODE_CONTEXT_TRIGGER` | `0.8` | 达到预算比例后自动压缩，范围 `(0, 1]` |
@@ -190,11 +207,11 @@ minicode-rebuild --interactive --resume latest
 minicode-rebuild --resume <session-id> "继续上次任务"
 ```
 
-交互模式提供 `/help`、`/session`、`/sessions`、`/transcript`、`/checkpoints`、`/rewind-preview [checkpoint-id]`、`/rewind [checkpoint-id]`、`/skills`、`/memory`、`/timeline`、`/stats`、`/compact` 和 `/exit`。`/rewind` 总会先显示预览，只有随后完整输入 `yes` 才修改文件；发现 Agent 写入后又有外部修改时会拒绝覆盖。
+交互模式提供 `/help`、`/session`、`/sessions`、`/transcript`、`/checkpoints`、`/rewind-preview [checkpoint-id]`、`/rewind [checkpoint-id]`、`/skills`、`/memory`、`/timeline`、`/budget`、`/stats`、`/compact` 和 `/exit`。`/rewind` 总会先显示预览，只有随后完整输入 `yes` 才修改文件；发现 Agent 写入后又有外部修改时会拒绝覆盖。
 
 会话 JSON、长期记忆和事件日志位于工作区 `.minicode-rebuild/`，已从 Git 与内置通用文件工具中隔离。Checkpoint 只覆盖 `write_file`、`edit_file` 和 `patch_file` 的 UTF-8 文件变更；`run_command` 的任意副作用和专用记忆存储不在 Rewind 范围内。写文件、运行命令和模型发起的记忆变更仍会显示风险与操作详情，并要求选择一次允许、会话允许或拒绝。Headless 模式默认拒绝所有变更；只有明确传入 `--allow-mutations` 才会在本次运行内逐项自动批准，并在标准错误输出警告。
 
-每轮会输出模型步数、工具次数、模型返回的 token 用量和压缩次数。上下文估算是跨 Provider 的保守启发式，不等同于服务端精确 tokenizer；工具结果会优先裁剪，旧轮次按用户输入边界摘要，并始终保留最近完整轮次和主系统提示。会话恢复加载的是受预算约束的工作历史，`/transcript` 则保留完整、未压缩的用户消息、assistant 工具调用和工具结果。
+每轮会输出模型步数、工具次数、模型返回的 token 用量和压缩次数。上下文估算是跨 Provider 的保守启发式，不等同于服务端精确 tokenizer；工具结果会优先裁剪，旧轮次按用户输入边界摘要，并始终保留最近完整轮次和主系统提示。会话恢复加载的是受上下文预算约束的工作历史，并继续累计可选的会话 token 成本预算；`/transcript` 则保留完整、未压缩的用户消息、assistant 工具调用和工具结果。
 
 最小的库调用边界如下：
 
