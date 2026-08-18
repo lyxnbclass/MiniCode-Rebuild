@@ -8,12 +8,12 @@
 
 | 项目 | 内容 |
 |---|---|
-| 当前阶段 | 阶段 12：成本控制（已完成本地实现与验证） |
+| 当前阶段 | 阶段 12：成本控制（已完成） |
 | 最近完成 | 阶段 12：Token 成本控制 |
 | 当前分支 | `codex/phase-12-cost-control` |
 | 最新阶段实现提交 | `fa243dc feat(phase-12): add token cost controls` |
 | 测试状态 | 阶段相关回归 `107 passed`；全量回归 `298 passed, 3 skipped`；分支覆盖率 `85.58%` |
-| 下一步 | 推送阶段 12 分支、创建 Draft PR 并完成跨平台 CI；其他高级能力继续保持独立阶段 |
+| 下一步 | 审核并由用户合并 Draft PR #6；其他高级能力继续保持独立阶段 |
 
 ## 总体架构
 
@@ -1867,3 +1867,7 @@ request.max_output_tokens = min(configured_output_limit, available_output)
 - 分支：`codex/phase-12-cost-control`。
 - 实现提交：`fa243dc feat(phase-12): add token cost controls`。
 - 文档收口使用独立提交；分支推送后创建以 `master` 为基线的 Draft PR，不自动合并。
+
+### 8. 跨平台验证记录
+
+阶段 12 分支推送后创建 Draft PR #6。GitHub Actions 运行 `32097364115` 的 Ubuntu 3.11、Ubuntu 3.13、Windows 3.11、Windows 3.13 四组任务全部通过；PR 以 `master` 为基线并保持 Draft，不自动合并主分支。
