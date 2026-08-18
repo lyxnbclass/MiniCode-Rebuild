@@ -13,6 +13,7 @@ from minicode_rebuild.config import (
     ModelSettings,
     RuntimeSettings,
 )
+from minicode_rebuild.memory import MemoryStore, MemoryStoreError
 from minicode_rebuild.session import SessionStore
 from minicode_rebuild.skills import SkillCatalog, SkillError
 
@@ -77,6 +78,11 @@ def check_readiness(
         checks.append(ReadinessCheck("skills", True, f"{count} discovered"))
     except SkillError as exc:
         checks.append(ReadinessCheck("skills", False, str(exc)))
+    try:
+        count = len(MemoryStore(workspace).list())
+        checks.append(ReadinessCheck("memory-store", True, f"{count} stored"))
+    except MemoryStoreError as exc:
+        checks.append(ReadinessCheck("memory-store", False, str(exc)))
     return ReadinessReport(tuple(checks))
 
 

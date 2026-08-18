@@ -25,6 +25,7 @@ from minicode_rebuild.config import (
 )
 from minicode_rebuild.core import ModelAdapter, ModelResponse, ToolCall
 from minicode_rebuild.hooks import HookManager
+from minicode_rebuild.memory import MemoryStoreError
 from minicode_rebuild.models import MockModel
 from minicode_rebuild.models.openai_compatible import OpenAICompatibleAdapter
 from minicode_rebuild.observability import (
@@ -236,8 +237,8 @@ def _run_interactive(
         "MiniCode Rebuild interactive\n"
         f"Session: {session.session_id}\n"
         "Commands: /help, /session, /sessions, /transcript, /checkpoints, "
-        "/rewind-preview [id], /rewind [id], /skills, /timeline, /stats, "
-        "/compact, /exit\n"
+        "/rewind-preview [id], /rewind [id], /skills, /memory, /timeline, "
+        "/stats, /compact, /exit\n"
     )
     output.flush()
     while True:
@@ -256,8 +257,8 @@ def _run_interactive(
         if user_message == "/help":
             output.write(
                 "Commands: /help, /session, /sessions, /transcript, /checkpoints, "
-                "/rewind-preview [id], /rewind [id], /skills, /timeline, /stats, "
-                "/compact, /exit\n"
+                "/rewind-preview [id], /rewind [id], /skills, /memory, /timeline, "
+                "/stats, /compact, /exit\n"
             )
             continue
         if user_message == "/session":
@@ -297,6 +298,65 @@ def _run_interactive(
                 output.write("No workspace skills discovered.\n")
             for skill in skills:
                 output.write(f"{skill.name}: {skill.description}\n")
+            continue
+        if user_message == "/memory":
+            output.write(
+                "Memory commands: /memory list, /memory search <query>, "
+                "/memory add <text>, /memory forget <id>\n"
+            )
+            continue
+        if user_message == "/memory list":
+            try:
+                output.write(session.format_memories(session.list_memories()) + "\n")
+            except MemoryStoreError as exc:
+                output.write(f"Memory error: {exc}\n")
+            continue
+        if user_message.startswith("/memory search "):
+            query = user_message[len("/memory search ") :].strip()
+            try:
+                matches = session.search_memories(query)
+                output.write(
+                    session.format_memories(tuple(item.record for item in matches))
+                    + "\n"
+                )
+            except MemoryStoreError as exc:
+                output.write(f"Memory error: {exc}\n")
+            continue
+        if user_message.startswith("/memory add "):
+            content = user_message[len("/memory add ") :].strip()
+            try:
+                memory_record = session.add_memory(content)
+                output.write(
+                    f"Saved workspace memory {memory_record.memory_id}.\n"
+                )
+            except MemoryStoreError as exc:
+                output.write(f"Memory error: {exc}\n")
+            continue
+        if user_message.startswith("/memory forget "):
+            memory_id = user_message[len("/memory forget ") :].strip()
+            try:
+                memory_record = session.get_memory(memory_id)
+            except MemoryStoreError as exc:
+                output.write(f"Memory error: {exc}\n")
+                continue
+            output.write(
+                f"Forget memory: {memory_record.content}\nType yes to delete it: "
+            )
+            output.flush()
+            if input_stream.readline().strip().casefold() != "yes":
+                output.write("Memory deletion cancelled.\n")
+                continue
+            try:
+                session.forget_memory(memory_id)
+                output.write(f"Deleted workspace memory {memory_id}.\n")
+            except MemoryStoreError as exc:
+                output.write(f"Memory error: {exc}\n")
+            continue
+        if user_message.startswith("/memory"):
+            output.write(
+                "Memory commands: /memory list, /memory search <query>, "
+                "/memory add <text>, /memory forget <id>\n"
+            )
             continue
         if user_message == "/timeline":
             output.write(session.timeline() + "\n")

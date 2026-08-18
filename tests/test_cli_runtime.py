@@ -14,6 +14,7 @@ from minicode_rebuild.config import RuntimeSettings
 from minicode_rebuild.context import ContextManager, ContextPolicy
 from minicode_rebuild.core import ModelResponse, TokenUsage
 from minicode_rebuild.hooks import HookEvent, HookManager
+from minicode_rebuild.memory import MemoryStore
 from minicode_rebuild.models import MockModel
 from minicode_rebuild.permissions import (
     PermissionDecision,
@@ -195,6 +196,29 @@ def test_session_injects_skill_catalog_but_not_full_content(tmp_path: Path) -> N
     assert "Be precise" in prompt
     assert "review: Review changes." in prompt
     assert "PRIVATE STEPS" not in prompt
+
+
+def test_session_exposes_memory_policy_without_eager_memory_content(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore(tmp_path)
+    store.add("PRIVATE REMEMBERED FACT")
+    model = MockModel([ModelResponse(content="Done")])
+    session = AgentSession(
+        model=model,
+        tools=ToolRegistry(),
+        context=ToolContext(tmp_path),
+        settings=RuntimeSettings(max_steps=3, system_prompt="Be precise"),
+        output=StringIO(),
+        memory_store=store,
+    )
+
+    session.run("hello")
+
+    prompt = model.requests[0].messages[0].content
+    assert "Long-term memory is scoped to this workspace" in prompt
+    assert "untrusted" in prompt
+    assert "PRIVATE REMEMBERED FACT" not in prompt
 
 
 def test_session_lifecycle_hook_failure_is_visible_and_nonfatal(tmp_path: Path) -> None:

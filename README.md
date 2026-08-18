@@ -4,7 +4,7 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 
 ## 当前状态
 
-阶段 0“仓库初始化与工程基线”至阶段 10“可观测性、质量与发布准备”已经完成。
+阶段 0“仓库初始化与工程基线”至阶段 10“可观测性、质量与发布准备”已经完成；阶段 11 已选择并实现独立高级能力“长期记忆与检索”。
 
 目前已经具备：
 
@@ -36,11 +36,30 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 - 扫描工作区 `.minicode/skills/<name>/SKILL.md`，仅注入有界元数据，并通过 `load_skill` 按需加载正文；
 - 在 Agent、会话与工具边界注册进程内 Hooks，隔离并显式报告 Hook 失败；
 - 将脱敏生命周期元数据写入工作区 JSONL 日志，并通过时间线查看运行过程；
-- 离线检查 Python、运行配置、Provider 配置、会话存储与 Skills readiness；
+- 在工作区本地显式保存长期记忆，并通过有界词法检索按需召回；
+- 将记忆结果标记为不可信历史数据，模型写入和删除仍经过权限边界；
+- 离线检查 Python、运行配置、Provider 配置、会话存储、Skills 与记忆存储 readiness；
 - 使用 Ruff、Mypy、分支覆盖率、构建、安装和跨平台 CI 作为发布质量门禁；
 - 执行自动化测试。
 
-阶段 0 至阶段 10 的基础路线已经完成。后续高级能力必须从阶段 11 清单中单独选择、设计、测试和提交。
+阶段 0 至阶段 10 的基础路线和阶段 11 的“长期记忆与检索”已经完成。其余高级能力仍必须单独选择、设计、测试和提交。
+
+## 长期记忆与检索
+
+长期记忆保存在当前工作区 `.minicode-rebuild/memories.json`，不会跨工作区共享，也不会把完整会话自动写入记忆。模型只得到记忆使用规则，不会在每轮自动加载全部内容；需要历史事实时，通过 `search_memory` 按需检索。
+
+交互模式可由用户直接管理记忆：
+
+```text
+/memory add Prefer pytest for regression tests
+/memory list
+/memory search pytest
+/memory forget <memory-id>
+```
+
+`/memory add` 是用户显式持久化指令；`/memory forget` 会展示目标内容，并要求完整输入 `yes`。模型调用 `save_memory` 或 `delete_memory` 时仍走现有权限提示，Headless 模式默认拒绝，只有显式使用 `--allow-mutations` 才允许本次进程修改记忆。
+
+存储最多 500 条记忆；单条内容、标签、查询、返回数量和结果预览均有上限。检索使用无网络、无第三方依赖的确定性词法评分，适合项目约定、用户明确偏好和长期任务事实，不等同于 embedding 语义搜索。检索结果始终带有“不可信历史数据”边界，不得覆盖当前系统或用户指令，也可能已经过时。
 
 ## 可观测性与 Readiness
 
@@ -171,9 +190,9 @@ minicode-rebuild --interactive --resume latest
 minicode-rebuild --resume <session-id> "继续上次任务"
 ```
 
-交互模式提供 `/help`、`/session`、`/sessions`、`/transcript`、`/checkpoints`、`/rewind-preview [checkpoint-id]`、`/rewind [checkpoint-id]`、`/stats`、`/compact` 和 `/exit`。`/rewind` 总会先显示预览，只有随后完整输入 `yes` 才修改文件；发现 Agent 写入后又有外部修改时会拒绝覆盖。
+交互模式提供 `/help`、`/session`、`/sessions`、`/transcript`、`/checkpoints`、`/rewind-preview [checkpoint-id]`、`/rewind [checkpoint-id]`、`/skills`、`/memory`、`/timeline`、`/stats`、`/compact` 和 `/exit`。`/rewind` 总会先显示预览，只有随后完整输入 `yes` 才修改文件；发现 Agent 写入后又有外部修改时会拒绝覆盖。
 
-会话 JSON 位于工作区 `.minicode-rebuild/sessions/`，已从 Git 与内置文件工具中隔离。Checkpoint 只覆盖 `write_file`、`edit_file` 和 `patch_file` 的 UTF-8 文件变更；`run_command` 的任意副作用不在 Rewind 范围内。写文件和运行命令仍会显示风险与操作详情，并要求选择一次允许、会话允许或拒绝。Headless 模式默认拒绝所有变更；只有明确传入 `--allow-mutations` 才会在本次运行内逐项自动批准，并在标准错误输出警告。
+会话 JSON、长期记忆和事件日志位于工作区 `.minicode-rebuild/`，已从 Git 与内置通用文件工具中隔离。Checkpoint 只覆盖 `write_file`、`edit_file` 和 `patch_file` 的 UTF-8 文件变更；`run_command` 的任意副作用和专用记忆存储不在 Rewind 范围内。写文件、运行命令和模型发起的记忆变更仍会显示风险与操作详情，并要求选择一次允许、会话允许或拒绝。Headless 模式默认拒绝所有变更；只有明确传入 `--allow-mutations` 才会在本次运行内逐项自动批准，并在标准错误输出警告。
 
 每轮会输出模型步数、工具次数、模型返回的 token 用量和压缩次数。上下文估算是跨 Provider 的保守启发式，不等同于服务端精确 tokenizer；工具结果会优先裁剪，旧轮次按用户输入边界摘要，并始终保留最近完整轮次和主系统提示。会话恢复加载的是受预算约束的工作历史，`/transcript` 则保留完整、未压缩的用户消息、assistant 工具调用和工具结果。
 
@@ -335,7 +354,7 @@ python scripts/demo.py
 ## 跨平台与发布检查清单
 
 - Windows 使用 `\.venv\Scripts\python.exe`，macOS/Linux 使用 `./.venv/bin/python`；项目业务命令仍通过参数数组和 `shell=False` 执行。
-- 两个符号链接安全测试在未授予 Windows 创建符号链接权限时会跳过；CI 的 Ubuntu 任务覆盖该路径。
+- 三个符号链接安全测试在未授予 Windows 创建符号链接权限时会跳过；CI 的 Ubuntu 任务覆盖通用路径、文件工具和记忆存储的真实逃逸路径。
 - 终端输出、Skill、会话和事件日志统一使用 UTF-8；Windows 文件替换与权限位行为已有平台保护。
 - 发布前确认 Ruff、Mypy、覆盖率测试、编译、构建、全新环境 wheel 安装和 Mock 演示全部通过。
 - 检查 Git diff 中没有 `.env`、API Key、会话、事件日志、缓存、构建产物或无关目录。
