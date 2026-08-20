@@ -20,6 +20,7 @@ from minicode_rebuild.core import (
     ToolCall,
 )
 from minicode_rebuild.models.errors import (
+    ModelHTTPError,
     ModelResponseError,
     ModelTransportError,
 )
@@ -310,7 +311,5 @@ class OpenAICompatibleAdapter:
         )
         if response.status < 200 or response.status >= 300:
             message = _error_message(response.body, response.status)
-            raise ModelResponseError(
-                f"OpenAI-compatible API returned {response.status}: {message}"
-            )
+            raise ModelHTTPError(response.status, message)
         return _parse_response(_decode_json(response.body))

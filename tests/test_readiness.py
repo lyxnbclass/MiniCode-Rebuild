@@ -18,10 +18,24 @@ def test_readiness_validates_provider_without_network(tmp_path: Path) -> None:
 
     assert report.ready is True
     output = format_readiness(report)
-    assert "model=demo-model" in output
+    assert "models=demo-model" in output
     assert "https://example.test/v1/chat/completions" in output
     assert "not-sent-anywhere" not in output
     assert "memory-store: 0 stored" in output
+
+
+def test_readiness_validates_ordered_fallback_models(tmp_path: Path) -> None:
+    report = check_readiness(
+        tmp_path,
+        {
+            "OPENAI_API_KEY": "not-sent-anywhere",
+            "MINICODE_MODEL": "primary",
+            "MINICODE_FALLBACK_MODELS": "secondary,tertiary",
+        },
+    )
+
+    assert report.ready is True
+    assert "models=primary,secondary,tertiary" in format_readiness(report)
 
 
 def test_readiness_reports_missing_provider_key(tmp_path: Path) -> None:
@@ -32,6 +46,24 @@ def test_readiness_reports_missing_provider_key(tmp_path: Path) -> None:
         check.name == "provider-config" and not check.ready
         for check in report.checks
     )
+
+
+def test_readiness_rejects_endpoint_credentials_without_displaying_them(
+    tmp_path: Path,
+) -> None:
+    report = check_readiness(
+        tmp_path,
+        {
+            "OPENAI_API_KEY": "not-sent-anywhere",
+            "OPENAI_BASE_URL": "https://user:password@example.test/v1",
+        },
+    )
+
+    output = format_readiness(report)
+    assert report.ready is False
+    assert "embedded credentials" in output
+    assert "user" not in output
+    assert "password" not in output
 
 
 def test_demo_readiness_does_not_require_provider_key(tmp_path: Path) -> None:

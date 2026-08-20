@@ -18,7 +18,11 @@ from minicode_rebuild.core import (
     TokenUsage,
     ToolCall,
 )
-from minicode_rebuild.models.errors import ModelResponseError, ModelTransportError
+from minicode_rebuild.models.errors import (
+    ModelHTTPError,
+    ModelResponseError,
+    ModelTransportError,
+)
 from minicode_rebuild.models.openai_compatible import (
     HttpResponse,
     OpenAICompatibleAdapter,
@@ -275,6 +279,28 @@ def test_adapter_surfaces_http_error_message() -> None:
 
     with pytest.raises(ModelResponseError, match="invalid credentials"):
         adapter.complete(request(Message(role=MessageRole.USER, content="Hi")))
+
+
+@pytest.mark.parametrize(
+    ("status", "retryable"),
+    [(400, False), (401, False), (408, True), (429, True), (500, True), (599, True)],
+)
+def test_adapter_http_error_preserves_status_and_retryability(
+    status: int,
+    retryable: bool,
+) -> None:
+    adapter = OpenAICompatibleAdapter(
+        settings(),
+        transport=FakeTransport(
+            [json_response({"error": {"message": "failed"}}, status=status)]
+        ),
+    )
+
+    with pytest.raises(ModelHTTPError) as raised:
+        adapter.complete(request(Message(role=MessageRole.USER, content="Hi")))
+
+    assert raised.value.status == status
+    assert raised.value.retryable is retryable
 
 
 def test_default_transport_wraps_network_error(
