@@ -150,6 +150,32 @@ def test_headless_real_model_uses_environment_and_reports_stats(
     assert model.requests[0].messages[-1].content == "answer once"
 
 
+def test_headless_token_budget_blocks_before_provider_call(tmp_path: Path) -> None:
+    stdout = StringIO()
+    model = MockModel([ModelResponse(content="must not run")])
+
+    code = main(
+        ["--cwd", str(tmp_path), "--token-budget", "1", "answer once"],
+        environment={"OPENAI_API_KEY": "secret"},
+        stdin=StringIO(),
+        stdout=stdout,
+        stderr=StringIO(),
+        model=model,
+    )
+
+    assert code == 1
+    assert "Token budget exhausted" in stdout.getvalue()
+    assert model.requests == ()
+
+
+@pytest.mark.parametrize("option", ["--token-budget", "--max-output-tokens"])
+def test_cli_rejects_non_positive_budget_flags(option: str) -> None:
+    with pytest.raises(SystemExit) as raised:
+        main([option, "0"])
+
+    assert raised.value.code == 2
+
+
 def test_headless_can_read_prompt_from_stdin(tmp_path: Path) -> None:
     model = MockModel([ModelResponse(content="From pipe")])
     stdout = StringIO()

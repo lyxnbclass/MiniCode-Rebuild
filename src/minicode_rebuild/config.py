@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from minicode_rebuild.context import ContextPolicy
+from minicode_rebuild.cost import TokenBudgetPolicy
 
 DEFAULT_MODEL = "deepseek-v4-pro"
 DEFAULT_OPENAI_BASE_URL = "https://api.deepseek.com"
@@ -100,6 +101,7 @@ class RuntimeSettings:
     max_steps: int = DEFAULT_MAX_STEPS
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     context_policy: ContextPolicy = field(default_factory=ContextPolicy)
+    token_budget_policy: TokenBudgetPolicy = field(default_factory=TokenBudgetPolicy)
 
     def __post_init__(self) -> None:
         if isinstance(self.max_steps, bool) or not isinstance(self.max_steps, int):
@@ -112,6 +114,10 @@ class RuntimeSettings:
             raise ModelConfigurationError("MINICODE_SYSTEM_PROMPT must be text")
         if not isinstance(self.context_policy, ContextPolicy):
             raise ModelConfigurationError("context_policy must be a ContextPolicy")
+        if not isinstance(self.token_budget_policy, TokenBudgetPolicy):
+            raise ModelConfigurationError(
+                "token_budget_policy must be a TokenBudgetPolicy"
+            )
         object.__setattr__(self, "system_prompt", self.system_prompt.strip())
 
     @classmethod
@@ -132,6 +138,20 @@ class RuntimeSettings:
 
         def integer(name: str, default: int) -> int:
             raw = env.get(name, str(default)).strip()
+            try:
+                value = int(raw)
+            except ValueError as error:
+                raise ModelConfigurationError(f"{name} must be an integer") from error
+            if value < 1:
+                raise ModelConfigurationError(
+                    f"{name} must be greater than zero"
+                )
+            return value
+
+        def optional_integer(name: str) -> int | None:
+            raw = env.get(name, "").strip()
+            if not raw:
+                return None
             try:
                 value = int(raw)
             except ValueError as error:
@@ -176,5 +196,9 @@ class RuntimeSettings:
                 summary_tokens=integer(
                     "MINICODE_SUMMARY_TOKENS", ContextPolicy().summary_tokens
                 ),
+            ),
+            token_budget_policy=TokenBudgetPolicy(
+                session_tokens=optional_integer("MINICODE_SESSION_TOKEN_BUDGET"),
+                max_output_tokens=optional_integer("MINICODE_MAX_OUTPUT_TOKENS"),
             ),
         )

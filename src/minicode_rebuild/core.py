@@ -108,6 +108,7 @@ class ModelRequest:
 
     messages: tuple[Message, ...]
     tools: tuple[ModelTool, ...] = ()
+    max_output_tokens: int | None = None
 
     def __post_init__(self) -> None:
         messages = tuple(self.messages)
@@ -115,6 +116,13 @@ class ModelRequest:
             raise ValueError("a model request requires at least one message")
         object.__setattr__(self, "messages", messages)
         object.__setattr__(self, "tools", tuple(self.tools))
+        if self.max_output_tokens is not None:
+            if (
+                isinstance(self.max_output_tokens, bool)
+                or not isinstance(self.max_output_tokens, int)
+                or self.max_output_tokens < 1
+            ):
+                raise ValueError("max_output_tokens must be a positive integer or None")
 
 
 @dataclass(frozen=True, slots=True)

@@ -44,6 +44,16 @@ EXIT_USAGE_ERROR = 2
 EXIT_INTERRUPTED = 130
 
 
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the command-line parser without performing side effects."""
 
@@ -85,6 +95,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="N",
         help="maximum model steps per turn (or MINICODE_MAX_STEPS)",
+    )
+    parser.add_argument(
+        "--token-budget",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="maximum reported tokens for this session (or MINICODE_SESSION_TOKEN_BUDGET)",
+    )
+    parser.add_argument(
+        "--max-output-tokens",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help="maximum output tokens per model request (or MINICODE_MAX_OUTPUT_TOKENS)",
     )
     parser.add_argument(
         "--system-prompt",
@@ -137,6 +161,12 @@ def _runtime_settings(
         settings = replace(settings, max_steps=args.max_steps)
     if args.system_prompt is not None:
         settings = replace(settings, system_prompt=args.system_prompt)
+    budget = settings.token_budget_policy
+    if args.token_budget is not None:
+        budget = replace(budget, session_tokens=args.token_budget)
+    if args.max_output_tokens is not None:
+        budget = replace(budget, max_output_tokens=args.max_output_tokens)
+    settings = replace(settings, token_budget_policy=budget)
     return settings
 
 
@@ -238,7 +268,7 @@ def _run_interactive(
         f"Session: {session.session_id}\n"
         "Commands: /help, /session, /sessions, /transcript, /checkpoints, "
         "/rewind-preview [id], /rewind [id], /skills, /memory, /timeline, "
-        "/stats, /compact, /exit\n"
+        "/budget, /stats, /compact, /exit\n"
     )
     output.flush()
     while True:
@@ -258,7 +288,7 @@ def _run_interactive(
             output.write(
                 "Commands: /help, /session, /sessions, /transcript, /checkpoints, "
                 "/rewind-preview [id], /rewind [id], /skills, /memory, /timeline, "
-                "/stats, /compact, /exit\n"
+                "/budget, /stats, /compact, /exit\n"
             )
             continue
         if user_message == "/session":
@@ -360,6 +390,9 @@ def _run_interactive(
             continue
         if user_message == "/timeline":
             output.write(session.timeline() + "\n")
+            continue
+        if user_message == "/budget":
+            output.write(f"[budget] {session.budget_status()}\n")
             continue
         if user_message == "/rewind-preview" or user_message.startswith("/rewind-preview "):
             checkpoint_id = user_message[len("/rewind-preview") :].strip() or None

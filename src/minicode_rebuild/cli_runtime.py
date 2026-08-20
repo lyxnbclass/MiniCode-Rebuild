@@ -11,6 +11,7 @@ from minicode_rebuild.agent import AgentResult, run_agent_turn
 from minicode_rebuild.config import RuntimeSettings
 from minicode_rebuild.context import CompactionResult, ContextManager
 from minicode_rebuild.core import Message, MessageRole, ModelAdapter, ToolCall
+from minicode_rebuild.cost import format_budget
 from minicode_rebuild.hooks import HookEvent, HookManager, HookReport
 from minicode_rebuild.memory import (
     MemoryRecord,
@@ -259,6 +260,8 @@ class AgentSession:
             max_steps=self.settings.max_steps,
             tool_observer=self._observe_tool,
             message_preparer=self._prepare_messages,
+            token_budget=self.settings.token_budget_policy,
+            used_tokens=self.stats.input_tokens + self.stats.output_tokens,
         )
         raw_history = tuple(
             message
@@ -377,6 +380,14 @@ class AgentSession:
         if self.event_log is None:
             return "Runtime event logging is disabled."
         return format_timeline(self.event_log.read(limit=limit))
+
+    def budget_status(self) -> str:
+        """Render the configured token controls and reported session usage."""
+
+        return format_budget(
+            self.settings.token_budget_policy,
+            used_tokens=self.stats.input_tokens + self.stats.output_tokens,
+        )
 
     def preview_rewind(self, checkpoint_id: str | None = None) -> RewindPlan:
         if self.session_store is None or self.session_record is None:
