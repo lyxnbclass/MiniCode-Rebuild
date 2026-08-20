@@ -14,6 +14,8 @@ DEFAULT_MODEL = "deepseek-v4-pro"
 DEFAULT_OPENAI_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL_TIMEOUT_SECONDS = 120
 DEFAULT_MAX_STEPS = 12
+MAX_FALLBACK_MODELS = 4
+MAX_MODEL_NAME_LENGTH = 256
 DEFAULT_SYSTEM_PROMPT = (
     "You are a careful local coding assistant. Inspect the workspace with tools "
     "before making claims, and ask for permission before mutations."
@@ -24,6 +26,21 @@ class ModelConfigurationError(ValueError):
     """Raised when model settings are missing or invalid."""
 
 
+def _model_name(value: object, variable: str) -> str:
+    if not isinstance(value, str):
+        raise ModelConfigurationError(f"{variable} must be text")
+    normalized = value.strip()
+    if not normalized:
+        raise ModelConfigurationError(f"{variable} must not be empty")
+    if len(normalized) > MAX_MODEL_NAME_LENGTH:
+        raise ModelConfigurationError(
+            f"{variable} must not exceed {MAX_MODEL_NAME_LENGTH} characters"
+        )
+    if not normalized.isprintable():
+        raise ModelConfigurationError(f"{variable} must not contain control characters")
+    return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class ModelSettings:
     """Validated settings for an OpenAI-compatible model endpoint."""
@@ -32,14 +49,18 @@ class ModelSettings:
     base_url: str
     api_key: str = field(repr=False)
     timeout_seconds: int = DEFAULT_MODEL_TIMEOUT_SECONDS
+    fallback_models: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        model = self.model.strip()
+        model = _model_name(self.model, "MINICODE_MODEL")
         base_url = self.base_url.rstrip("/")
         api_key = self.api_key.strip()
+        if isinstance(self.fallback_models, str):
+            raise ModelConfigurationError(
+                "fallback_models must be a tuple of model names"
+            )
+        fallback_models = tuple(self.fallback_models)
 
-        if not model:
-            raise ModelConfigurationError("MINICODE_MODEL must not be empty")
         if not api_key:
             raise ModelConfigurationError(
                 "Set OPENAI_API_KEY or DEEPSEEK_API_KEY before using the real model adapter"
@@ -47,6 +68,10 @@ class ModelSettings:
         parsed_url = urlsplit(base_url)
         if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
             raise ModelConfigurationError("OPENAI_BASE_URL must be an http(s) URL")
+        if parsed_url.username is not None or parsed_url.password is not None:
+            raise ModelConfigurationError(
+                "OPENAI_BASE_URL must not contain embedded credentials"
+            )
         if parsed_url.query or parsed_url.fragment:
             raise ModelConfigurationError(
                 "OPENAI_BASE_URL must not contain a query string or fragment"
@@ -55,10 +80,26 @@ class ModelSettings:
             raise ModelConfigurationError(
                 "MINICODE_MODEL_TIMEOUT must be greater than zero"
             )
+        if len(fallback_models) > MAX_FALLBACK_MODELS:
+            raise ModelConfigurationError(
+                f"MINICODE_FALLBACK_MODELS may contain at most {MAX_FALLBACK_MODELS} models"
+            )
+        normalized_fallbacks: list[str] = []
+        for fallback in fallback_models:
+            normalized_fallbacks.append(
+                _model_name(fallback, "MINICODE_FALLBACK_MODELS")
+            )
+        if model in normalized_fallbacks or len(set(normalized_fallbacks)) != len(
+            normalized_fallbacks
+        ):
+            raise ModelConfigurationError(
+                "MINICODE_FALLBACK_MODELS must be unique and exclude MINICODE_MODEL"
+            )
 
         object.__setattr__(self, "model", model)
         object.__setattr__(self, "base_url", base_url)
         object.__setattr__(self, "api_key", api_key)
+        object.__setattr__(self, "fallback_models", tuple(normalized_fallbacks))
 
     @classmethod
     def from_env(
@@ -84,7 +125,26 @@ class ModelSettings:
             api_key=env.get("OPENAI_API_KEY")
             or env.get("DEEPSEEK_API_KEY", ""),
             timeout_seconds=timeout_seconds,
+            fallback_models=cls._fallback_models(env),
         )
+
+    @staticmethod
+    def _fallback_models(environment: Mapping[str, str]) -> tuple[str, ...]:
+        raw = environment.get("MINICODE_FALLBACK_MODELS", "").strip()
+        if not raw:
+            return ()
+        values = tuple(item.strip() for item in raw.split(","))
+        if any(not item for item in values):
+            raise ModelConfigurationError(
+                "MINICODE_FALLBACK_MODELS must be a comma-separated list without empty entries"
+            )
+        return values
+
+    @property
+    def model_candidates(self) -> tuple[str, ...]:
+        """Return primary then fallback model ids in deterministic order."""
+
+        return (self.model, *self.fallback_models)
 
     @property
     def chat_completions_url(self) -> str:

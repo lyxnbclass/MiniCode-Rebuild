@@ -26,8 +26,9 @@ from minicode_rebuild.config import (
 from minicode_rebuild.core import ModelAdapter, ModelResponse, ToolCall
 from minicode_rebuild.hooks import HookManager
 from minicode_rebuild.memory import MemoryStoreError
-from minicode_rebuild.models import MockModel
+from minicode_rebuild.models import MockModel, ModelRoute, RoutingModelAdapter
 from minicode_rebuild.models.openai_compatible import OpenAICompatibleAdapter
+from minicode_rebuild.models.routing import RoutingEvent
 from minicode_rebuild.observability import (
     EventLog,
     ObservabilityError,
@@ -201,11 +202,37 @@ def _select_model(
     demo: bool,
     environment: Mapping[str, str],
     injected: ModelAdapter | None,
+    output: TextIO,
 ) -> ModelAdapter:
     if demo:
         return injected or _demo_model()
+    if injected is not None:
+        return injected
     model_settings = ModelSettings.from_env(environment)
-    return injected or OpenAICompatibleAdapter(model_settings)
+    routes = tuple(
+        ModelRoute(
+            name=model_name,
+            adapter=OpenAICompatibleAdapter(
+                replace(model_settings, model=model_name, fallback_models=())
+            ),
+        )
+        for model_name in model_settings.model_candidates
+    )
+    if len(routes) == 1:
+        return routes[0].adapter
+
+    def observe_route(event: RoutingEvent) -> None:
+        if event.status == "failed":
+            action = "trying next route" if event.retrying else "stopping"
+            output.write(
+                f"[model-route] {event.route} failed "
+                f"({event.error_type}); {action}\n"
+            )
+        elif event.status == "selected":
+            output.write(f"[model-route] selected fallback {event.route}\n")
+        output.flush()
+
+    return RoutingModelAdapter(routes, observer=observe_route)
 
 
 def _print_result(
@@ -531,6 +558,7 @@ def main(
             demo=args.demo,
             environment=env,
             injected=model,
+            output=output,
         )
         if args.interactive:
             permission_prompt = make_permission_prompt(input_stream, output)

@@ -30,6 +30,7 @@ def test_settings_allow_openai_compatible_overrides() -> None:
             "OPENAI_API_KEY": "openai-test-secret",
             "DEEPSEEK_API_KEY": "deepseek-test-secret",
             "MINICODE_MODEL_TIMEOUT": "15",
+            "MINICODE_FALLBACK_MODELS": "fallback-small, fallback-stable",
         }
     )
 
@@ -38,6 +39,12 @@ def test_settings_allow_openai_compatible_overrides() -> None:
     assert settings.api_key == "openai-test-secret"
     assert settings.chat_completions_url == "https://example.test/v1/chat/completions"
     assert settings.timeout_seconds == 15
+    assert settings.fallback_models == ("fallback-small", "fallback-stable")
+    assert settings.model_candidates == (
+        "local-model",
+        "fallback-small",
+        "fallback-stable",
+    )
 
 
 def test_settings_accept_full_chat_completions_url() -> None:
@@ -82,6 +89,59 @@ def test_settings_repr_does_not_expose_api_key() -> None:
     settings = ModelSettings.from_env({"OPENAI_API_KEY": "top-secret-value"})
 
     assert "top-secret-value" not in repr(settings)
+
+
+@pytest.mark.parametrize(
+    "fallbacks",
+    [
+        "primary",
+        "secondary,secondary",
+        "secondary,,tertiary",
+        "one,two,three,four,five",
+        "secondary\nforged",
+        "secondary\x1b[31m",
+        "x" * 257,
+    ],
+)
+def test_settings_reject_invalid_fallback_models(fallbacks: str) -> None:
+    with pytest.raises(ModelConfigurationError, match="MINICODE_FALLBACK_MODELS"):
+        ModelSettings.from_env(
+            {
+                "OPENAI_API_KEY": "test-secret",
+                "MINICODE_MODEL": "primary",
+                "MINICODE_FALLBACK_MODELS": fallbacks,
+            }
+        )
+
+
+def test_settings_constructor_rejects_string_fallback_collection() -> None:
+    with pytest.raises(ModelConfigurationError, match="fallback_models"):
+        ModelSettings(
+            model="primary",
+            base_url="https://example.test",
+            api_key="secret",
+            fallback_models="secondary",  # type: ignore[arg-type]
+        )
+
+
+def test_settings_reject_control_characters_in_primary_model() -> None:
+    with pytest.raises(ModelConfigurationError, match="control characters"):
+        ModelSettings.from_env(
+            {
+                "OPENAI_API_KEY": "test-secret",
+                "MINICODE_MODEL": "primary\nforged",
+            }
+        )
+
+
+def test_settings_reject_base_url_credentials() -> None:
+    with pytest.raises(ModelConfigurationError, match="embedded credentials"):
+        ModelSettings.from_env(
+            {
+                "OPENAI_API_KEY": "test-secret",
+                "OPENAI_BASE_URL": "https://user:password@example.test/v1",
+            }
+        )
 
 
 def test_runtime_settings_load_cli_environment() -> None:

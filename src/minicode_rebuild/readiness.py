@@ -61,7 +61,8 @@ def check_readiness(
                 ReadinessCheck(
                     "provider-config",
                     True,
-                    f"model={settings.model} endpoint={settings.chat_completions_url}",
+                    f"models={','.join(settings.model_candidates)} "
+                    f"endpoint={settings.chat_completions_url}",
                 )
             )
         except ModelConfigurationError as exc:

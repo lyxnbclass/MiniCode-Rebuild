@@ -9,10 +9,12 @@ from pathlib import Path
 
 import pytest
 
+import minicode_rebuild.cli as cli_module
 from minicode_rebuild import __version__
 from minicode_rebuild.cli import main
 from minicode_rebuild.core import ModelResponse, TokenUsage, ToolCall
 from minicode_rebuild.models import MockModel
+from minicode_rebuild.models.errors import ModelTransportError
 
 
 def run_module(*arguments: str) -> subprocess.CompletedProcess[str]:
@@ -148,6 +150,46 @@ def test_headless_real_model_uses_environment_and_reports_stats(
     assert "steps=1" in stdout.getvalue()
     assert "tokens=5" in stdout.getvalue()
     assert model.requests[0].messages[-1].content == "answer once"
+
+
+def test_real_model_routes_to_configured_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[str] = []
+
+    class FakeAdapter:
+        def __init__(self, settings) -> None:
+            self.model = settings.model
+            created.append(self.model)
+
+        def complete(self, _request):
+            if self.model == "primary-model":
+                raise ModelTransportError("offline")
+            return ModelResponse(content="Recovered", usage=TokenUsage(3, 2))
+
+    monkeypatch.setattr(cli_module, "OpenAICompatibleAdapter", FakeAdapter)
+    stdout = StringIO()
+
+    code = main(
+        ["--cwd", str(tmp_path), "answer once"],
+        environment={
+            "OPENAI_API_KEY": "secret",
+            "MINICODE_MODEL": "primary-model",
+            "MINICODE_FALLBACK_MODELS": "fallback-model",
+        },
+        stdin=StringIO(),
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    assert code == 0
+    assert created == ["primary-model", "fallback-model"]
+    assert "primary-model failed (ModelTransportError); trying next route" in (
+        stdout.getvalue()
+    )
+    assert "selected fallback fallback-model" in stdout.getvalue()
+    assert "Recovered" in stdout.getvalue()
 
 
 def test_headless_token_budget_blocks_before_provider_call(tmp_path: Path) -> None:
