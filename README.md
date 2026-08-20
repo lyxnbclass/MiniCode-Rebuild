@@ -4,7 +4,7 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 
 ## 当前状态
 
-阶段 0“仓库初始化与工程基线”至阶段 10“可观测性、质量与发布准备”已经完成；阶段 11 已实现“长期记忆与检索”，阶段 12 已实现独立高级能力“成本控制”。
+阶段 0“仓库初始化与工程基线”至阶段 10“可观测性、质量与发布准备”已经完成；阶段 11“长期记忆与检索”和阶段 12“成本控制”已经合并，阶段 13“多模型路由与降级”已完成本地开发与验证，等待独立 PR 验证和合并。
 
 目前已经具备：
 
@@ -40,11 +40,13 @@ MiniCode Rebuild 是一个从零、分阶段实现的本地终端 AI Coding Agen
 - 将记忆结果标记为不可信历史数据，模型写入和删除仍经过权限边界；
 - 为会话设置可选 token 预算，并在请求前估算输入和工具协议成本；
 - 按剩余额度限制单次模型输出，预算不足时不调用 Provider；
+- 按配置顺序尝试主模型与后备模型，只对明确的瞬时故障执行降级；
+- 将路由失败和后备模型选择作为脱敏终端事件展示；
 - 离线检查 Python、运行配置、Provider 配置、会话存储、Skills 与记忆存储 readiness；
 - 使用 Ruff、Mypy、分支覆盖率、构建、安装和跨平台 CI 作为发布质量门禁；
 - 执行自动化测试。
 
-阶段 0 至阶段 10 的基础路线、阶段 11“长期记忆与检索”和阶段 12“成本控制”已经完成。其余高级能力仍必须单独选择、设计、测试和提交。
+阶段 0 至阶段 10 的基础路线、阶段 11“长期记忆与检索”和阶段 12“成本控制”已经完成并合并。阶段 13“多模型路由与降级”已完成本地实现，只有独立 PR 通过跨平台 CI 并合并后才视为正式完成；其余高级能力仍必须单独选择、设计、测试和提交。
 
 ## 长期记忆与检索
 
@@ -75,6 +77,22 @@ minicode-rebuild --interactive --resume latest --token-budget 50000
 请求发出前，运行时会估算消息与工具声明占用的输入 token，并从会话剩余额度中扣除输入预留，再把允许的输出上限映射到 OpenAI-compatible `max_tokens`。如果请求至少需要的输入和一个输出 token 都无法容纳，Agent 以 `budget_exhausted` 停止，不调用 Provider。恢复会话时，门禁会继续使用已经持久化的 Provider token 统计。交互模式可用 `/budget` 查看限制、已用量和剩余额度。
 
 该能力用于阻止失控的多步调用，不等同于精确账单上限。输入预算使用跨 Provider 启发式估算；服务端实际计费、缓存 token、推理 token 和价格规则由 Provider 决定。当前请求的真实用量只能在响应返回后得知，因此可能小幅越过估算值，但后续请求会使用更新后的服务端统计重新检查。若 Provider 不返回 usage，累计会话用量也无法精确增长；需要硬货币限额时仍应在 Provider 账户侧设置配额。
+
+## 多模型路由与降级
+
+真实模型模式可以在同一个 OpenAI-compatible 端点上配置一个主模型和最多四个有序后备模型：
+
+```powershell
+$env:MINICODE_MODEL="primary-model"
+$env:MINICODE_FALLBACK_MODELS="fallback-fast,fallback-stable"
+minicode-rebuild "分析并修复当前错误"
+```
+
+每次 Agent 模型步骤从主模型开始。只有连接失败、超时、HTTP 408/409/425/429 或 5xx 时，运行时才按顺序尝试下一个模型；HTTP 400/401/403 等永久错误、无法解析的响应、适配器编程错误和 `KeyboardInterrupt` 不会触发降级。每个候选最多调用一次，候选名称必须唯一，主模型不能在后备列表中重复。模型名称最多 256 个字符，并拒绝换行、ANSI 转义等不可打印控制字符。
+
+降级过程只输出模型名称、错误类型和是否继续，不输出 Provider 响应正文、请求内容、API Key 或工具参数。成功的后备响应继续经过原有 Agent Loop、工具权限和 token 成本控制；同一个 `ModelRequest.max_output_tokens` 会传递给所有候选。
+
+当前阶段只支持同一 API 基址与凭据下的多个模型 ID，不实现跨 Provider 凭据池、负载均衡、健康探测、自动能力评分或并行竞速。`OPENAI_BASE_URL` 不允许嵌入用户名或密码，避免 Readiness 输出泄露 URL 凭据。失败请求可能已经被 Provider 计费，但没有可靠 usage 时本地无法补记；需要硬成本保障时仍应结合 Provider 账户配额。
 
 ## 可观测性与 Readiness
 
@@ -156,6 +174,7 @@ python -m minicode_rebuild --help
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
 | `MINICODE_MODEL` | `deepseek-v4-pro` | 模型名称 |
+| `MINICODE_FALLBACK_MODELS` | 无 | 同一端点上的逗号分隔有序后备模型，最多四个 |
 | `OPENAI_BASE_URL` | `https://api.deepseek.com` | API 基址或完整 `/chat/completions` 地址 |
 | `MINICODE_MODEL_TIMEOUT` | `120` | 请求超时秒数，必须是正整数 |
 | `MINICODE_MAX_STEPS` | `12` | 每轮最大模型调用步数，必须是正整数 |
